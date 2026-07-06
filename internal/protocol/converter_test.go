@@ -56,6 +56,95 @@ func TestOpenAIToCommandCodeMapsFunctionToolChoiceToTool(t *testing.T) {
 	}
 }
 
+func TestOpenAIToCommandCodeMovesSystemMessagesOutOfMessageList(t *testing.T) {
+	req := &OpenAIRequest{
+		Model: "model",
+		Messages: []OpenAIMessage{
+			{Role: "system", Content: "first"},
+			{Role: "user", Content: "hello"},
+			{Role: "system", Content: "second"},
+		},
+	}
+
+	ccReq, err := OpenAIToCommandCode(req)
+	if err != nil {
+		t.Fatalf("OpenAIToCommandCode() error = %v", err)
+	}
+	if got, want := ccReq.Params.System, "second"; got != want {
+		t.Fatalf("System = %q, want %q", got, want)
+	}
+	if got, want := len(ccReq.Params.Messages), 1; got != want {
+		t.Fatalf("len(Messages) = %d, want %d", got, want)
+	}
+	if got, want := ccReq.Params.Messages[0].Role, "user"; got != want {
+		t.Fatalf("Messages[0].Role = %q, want %q", got, want)
+	}
+}
+
+func TestOpenAIToCommandCodeConvertsAssistantToolCallsAndToolResponses(t *testing.T) {
+	req := &OpenAIRequest{
+		Model: "model",
+		Messages: []OpenAIMessage{
+			{
+				Role:    "assistant",
+				Content: nil,
+				ToolCalls: []ToolCall{
+					{
+						ID:   "call_1",
+						Type: "function",
+						Function: FunctionCall{
+							Name:      "lookup",
+							Arguments: `{"q":"x"}`,
+						},
+					},
+				},
+			},
+			{Role: "tool", ToolCallID: "call_1", Content: "result"},
+		},
+	}
+
+	ccReq, err := OpenAIToCommandCode(req)
+	if err != nil {
+		t.Fatalf("OpenAIToCommandCode() error = %v", err)
+	}
+	if got, want := len(ccReq.Params.Messages), 2; got != want {
+		t.Fatalf("len(Messages) = %d, want %d", got, want)
+	}
+	toolCall := ccReq.Params.Messages[0].Content[0]
+	if got, want := toolCall.Type, "tool-call"; got != want {
+		t.Fatalf("tool call Type = %q, want %q", got, want)
+	}
+	if got, want := toolCall.ToolCallID, "call_1"; got != want {
+		t.Fatalf("tool call ID = %q, want %q", got, want)
+	}
+	if got, want := toolCall.ToolName, "lookup"; got != want {
+		t.Fatalf("tool call name = %q, want %q", got, want)
+	}
+	input, ok := toolCall.Input.(map[string]any)
+	if !ok {
+		t.Fatalf("tool call input = %T, want map", toolCall.Input)
+	}
+	if got, want := input["q"], any("x"); got != want {
+		t.Fatalf("tool call input q = %v, want %v", got, want)
+	}
+	toolResult := ccReq.Params.Messages[1]
+	if got, want := toolResult.Role, "tool"; got != want {
+		t.Fatalf("tool result role = %q, want %q", got, want)
+	}
+	if got, want := toolResult.Content[0].Type, "tool-result"; got != want {
+		t.Fatalf("tool result Type = %q, want %q", got, want)
+	}
+	if got, want := toolResult.Content[0].ToolName, "lookup"; got != want {
+		t.Fatalf("tool result name = %q, want %q", got, want)
+	}
+	if toolResult.Content[0].Output == nil {
+		t.Fatal("tool result Output = nil, want output")
+	}
+	if got, want := toolResult.Content[0].Output.Value, "result"; got != want {
+		t.Fatalf("tool result output = %q, want %q", got, want)
+	}
+}
+
 func TestAnthropicToOpenAIMapsToolChoiceAnyToRequired(t *testing.T) {
 	req := &AnthropicRequest{
 		Model:     "model",

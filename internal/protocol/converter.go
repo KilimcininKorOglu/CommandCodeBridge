@@ -20,9 +20,15 @@ func OpenAIToCommandCode(req *OpenAIRequest) (*CommandCodeRequest, error) {
 	toolNameByID := buildOpenAIToolNameMap(req.Messages)
 	ccMessages := make([]CommandCodeMessage, 0, len(req.Messages))
 	for _, msg := range req.Messages {
+		if msg.Role == "system" {
+			continue
+		}
 		ccMsg, err := openaiMessageToCommandCode(msg, toolNameByID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert message: %w", err)
+		}
+		if len(ccMsg.Content) == 0 {
+			continue
 		}
 		ccMessages = append(ccMessages, ccMsg)
 	}

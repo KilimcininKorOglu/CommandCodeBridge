@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -70,6 +71,24 @@ func TestOpenAITranslatorUsesTotalUsageForFinish(t *testing.T) {
 	}
 	if !strings.Contains(events[0].Data, `"inputTokens":3`) || !strings.Contains(events[0].Data, `"outputTokens":4`) {
 		t.Fatalf("event data = %s, want total usage", events[0].Data)
+	}
+}
+
+func TestOpenAITranslatorScansLargeNDJSONLines(t *testing.T) {
+	translator := NewOpenAITranslator("model", "chatcmpl-test", 1)
+	largeText := strings.Repeat("x", 128*1024)
+	line, err := json.Marshal(map[string]any{"type": "text-delta", "text": largeText})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	reader := strings.NewReader(string(line) + "\n")
+	var output bytes.Buffer
+
+	if err := translator.TranslateStream(reader, &output); err != nil {
+		t.Fatalf("TranslateStream() error = %v", err)
+	}
+	if !strings.Contains(output.String(), largeText) {
+		t.Fatal("TranslateStream() output does not contain the large content")
 	}
 }
 

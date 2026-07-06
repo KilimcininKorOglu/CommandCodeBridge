@@ -13,6 +13,8 @@ import (
 // ErrStreamIdleTimeout indicates that no upstream stream data arrived before the idle timeout.
 var ErrStreamIdleTimeout = errors.New("stream idle timeout")
 
+const maxStreamLineSize = 4 * 1024 * 1024
+
 // OpenAITranslator converts CommandCode NDJSON to OpenAI SSE format
 type OpenAITranslator struct {
 	model        string
@@ -353,6 +355,7 @@ func ScanLines(reader io.Reader) <-chan StreamLine {
 	go func() {
 		defer close(lines)
 		scanner := bufio.NewScanner(reader)
+		scanner.Buffer(make([]byte, 64*1024), maxStreamLineSize)
 		for scanner.Scan() {
 			lines <- StreamLine{Line: scanner.Text()}
 		}
