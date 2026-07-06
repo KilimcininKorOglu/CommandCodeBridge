@@ -1,0 +1,6 @@
+*.log
+*.zip
+logs/
+config.json
+data/config.json
+bin/*

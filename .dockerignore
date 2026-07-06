@@ -1,0 +1,5 @@
+.git
+*.log
+logs/
+*.md
+data/config.json

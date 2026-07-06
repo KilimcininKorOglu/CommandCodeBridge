@@ -1,0 +1,568 @@
+package http
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/kilimcininkoroglu/commandcode-bridge/internal/client"
+	"github.com/kilimcininkoroglu/commandcode-bridge/internal/config"
+	apierror "github.com/kilimcininkoroglu/commandcode-bridge/internal/error"
+	"github.com/kilimcininkoroglu/commandcode-bridge/internal/logging"
+	"github.com/kilimcininkoroglu/commandcode-bridge/internal/models"
+	"github.com/kilimcininkoroglu/commandcode-bridge/internal/protocol"
+	"github.com/kilimcininkoroglu/commandcode-bridge/internal/session"
+	"github.com/kilimcininkoroglu/commandcode-bridge/internal/streaming"
+)
+
+const (
+	streamIdleTimeout              = 30 * time.Second
+	nonStreamIdleTimeout           = 90 * time.Second
+	timeoutReduceContextThreshold  = 3
+	emptyResponseRetryAfterSeconds = 10
+	timeoutRetryAfterSeconds       = 5
+)
+
+var consecutiveTimeouts atomic.Int64
+
+// HandlerDependencies contains dependencies for HTTP handlers
+type HandlerDependencies struct {
+	Config       *config.Config
+	Logger       *logging.Logger
+	SessionStore *session.SessionStore
+	Client       *client.Client
+	ModelManager *models.ModelManager
+	InitManager  *client.InitManager
+	Version      string
+}
+
+// HandleChatCompletions handles OpenAI chat completions endpoint
+func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ccAPIKey := r.Context().Value("ccAPIKey").(string)
+
+		// Ensure initialization (fingerprint/lifecycle events)
+		if err := deps.InitManager.EnsureInitialized(r.Context(), ccAPIKey, deps.Config.Fingerprint); err != nil {
+			deps.Logger.Warn("Initialization failed", map[string]any{
+				"error": err.Error(),
+			})
+		}
+
+		// Parse request body
+		var openaiReq protocol.OpenAIRequest
+		if apiErr := decodeRequestBody(r.Body, &openaiReq); apiErr != nil {
+			sendError(w, apiErr)
+			return
+		}
+
+		// Get session ID
+		sessionID := deps.SessionStore.Resolve(r.Header, ccAPIKey)
+
+		// Convert to CommandCode format
+		ccReq, err := protocol.OpenAIToCommandCode(&openaiReq)
+		if err != nil {
+			deps.Logger.Error("Failed to convert request", map[string]any{
+				"error": err.Error(),
+			})
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to convert request").WithCode(http.StatusInternalServerError))
+			return
+		}
+
+		// Marshal CommandCode request
+		ccBody, err := json.Marshal(ccReq)
+		if err != nil {
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to marshal request").WithCode(http.StatusInternalServerError))
+			return
+		}
+
+		// Forward to CommandCode API
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		resp, err := deps.Client.Forward(ctx, ccBody, ccAPIKey, r.Header, sessionID, deps.Config.Fingerprint)
+		if err != nil {
+			deps.Logger.Error("Failed to forward request", map[string]any{
+				"error": err.Error(),
+			})
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to forward request").WithCode(http.StatusBadGateway))
+			return
+		}
+		defer resp.Body.Close()
+
+		// Handle streaming response
+		if openaiReq.Stream {
+			if handled := handleUpstreamStatus(w, resp); handled {
+				return
+			}
+
+			translator := streaming.NewOpenAITranslator(openaiReq.Model, generateCompletionID(), time.Now().Unix())
+			streamWriter := newDelayedSSEWriter(w)
+			if err := translator.TranslateStreamWithIdleTimeout(resp.Body, streamWriter, streamIdleTimeout); err != nil {
+				handleStreamingError(w, streamWriter, deps.Logger, err)
+				return
+			}
+			consecutiveTimeouts.Store(0)
+			_, outputTokens, _ := translator.GetUsage()
+			if outputTokens == 0 {
+				cancel()
+				sendStreamZeroOutput(w, streamWriter)
+				return
+			}
+			streamWriter.WriteDone()
+			return
+		}
+
+		// Handle non-streaming response
+		if resp.StatusCode != http.StatusOK {
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to read response").WithCode(http.StatusBadGateway))
+				return
+			}
+			apiErr := apierror.MapStatus(resp.StatusCode, string(body))
+			sendError(w, apiErr)
+			return
+		}
+
+		openaiResp, err := commandCodeStreamToOpenAIWithIdleTimeout(resp.Body, openaiReq.Model, generateCompletionID(), time.Now().Unix(), deps.Logger, nonStreamIdleTimeout)
+		if err != nil {
+			if apiErr, ok := err.(*apierror.APIError); ok {
+				sendError(w, apiErr)
+				return
+			}
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to parse response").WithCode(http.StatusBadGateway))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(openaiResp)
+	}
+}
+
+// HandleMessages handles Anthropic messages endpoint
+func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ccAPIKey := r.Context().Value("ccAPIKey").(string)
+
+		// Ensure initialization (fingerprint/lifecycle events)
+		if err := deps.InitManager.EnsureInitialized(r.Context(), ccAPIKey, deps.Config.Fingerprint); err != nil {
+			deps.Logger.Warn("Initialization failed", map[string]any{
+				"error": err.Error(),
+			})
+		}
+
+		// Parse request body
+		var anthropicReq protocol.AnthropicRequest
+		if apiErr := decodeRequestBody(r.Body, &anthropicReq); apiErr != nil {
+			sendError(w, apiErr)
+			return
+		}
+
+		// Convert to OpenAI format
+		openaiReq, err := protocol.AnthropicToOpenAI(&anthropicReq)
+		if err != nil {
+			deps.Logger.Error("Failed to convert request", map[string]any{
+				"error": err.Error(),
+			})
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to convert request").WithCode(http.StatusInternalServerError))
+			return
+		}
+
+		// Get session ID
+		sessionID := deps.SessionStore.Resolve(r.Header, ccAPIKey)
+
+		// Convert to CommandCode format
+		ccReq, err := protocol.OpenAIToCommandCode(openaiReq)
+		if err != nil {
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to convert request").WithCode(http.StatusInternalServerError))
+			return
+		}
+
+		// Marshal CommandCode request
+		ccBody, err := json.Marshal(ccReq)
+		if err != nil {
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to marshal request").WithCode(http.StatusInternalServerError))
+			return
+		}
+
+		// Forward to CommandCode API
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		resp, err := deps.Client.Forward(ctx, ccBody, ccAPIKey, r.Header, sessionID, deps.Config.Fingerprint)
+		if err != nil {
+			deps.Logger.Error("Failed to forward request", map[string]any{
+				"error": err.Error(),
+			})
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to forward request").WithCode(http.StatusBadGateway))
+			return
+		}
+		defer resp.Body.Close()
+
+		// Handle streaming response
+		if anthropicReq.Stream {
+			if handled := handleUpstreamStatus(w, resp); handled {
+				return
+			}
+
+			translator := streaming.NewAnthropicTranslator(anthropicReq.Model, generateMessageID())
+			streamWriter := newDelayedSSEWriter(w)
+			if err := translator.TranslateWithIdleTimeout(resp.Body, streamWriter, streamIdleTimeout); err != nil {
+				handleStreamingError(w, streamWriter, deps.Logger, err)
+				return
+			}
+			consecutiveTimeouts.Store(0)
+			if translator.OutputTokens() == 0 {
+				cancel()
+				sendStreamZeroOutput(w, streamWriter)
+				return
+			}
+			streamWriter.WriteDone()
+			return
+		}
+
+		// Handle non-streaming response
+		if resp.StatusCode != http.StatusOK {
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to read response").WithCode(http.StatusBadGateway))
+				return
+			}
+			apiErr := apierror.MapStatus(resp.StatusCode, string(body))
+			sendError(w, apiErr)
+			return
+		}
+
+		openaiResp, err := commandCodeStreamToOpenAIWithIdleTimeout(resp.Body, openaiReq.Model, generateCompletionID(), time.Now().Unix(), deps.Logger, nonStreamIdleTimeout)
+		if err != nil {
+			if apiErr, ok := err.(*apierror.APIError); ok {
+				sendError(w, apiErr)
+				return
+			}
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to parse response").WithCode(http.StatusBadGateway))
+			return
+		}
+
+		anthropicResp, err := protocol.OpenAIToAnthropic(openaiResp)
+		if err != nil {
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to convert response").WithCode(http.StatusInternalServerError))
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(anthropicResp)
+	}
+}
+
+// HandleModels handles the models endpoint
+func HandleModels(deps *HandlerDependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ccAPIKey := r.Context().Value("ccAPIKey").(string)
+
+		// Get models
+		modelData, err := deps.ModelManager.GetModels(r.Context(), ccAPIKey)
+		if err != nil {
+			deps.Logger.Error("Failed to get models", map[string]any{
+				"error": err.Error(),
+			})
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to get models").WithCode(http.StatusInternalServerError))
+			return
+		}
+
+		resp := map[string]any{
+			"object": "list",
+			"data":   modelData,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}
+}
+
+// HandleHealth handles the health check endpoint
+func HandleHealth(deps *HandlerDependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":  "ok",
+			"version": deps.Version,
+		})
+	}
+}
+
+// commandCodeStreamToOpenAI buffers CommandCode NDJSON into a non-streaming OpenAI response.
+type delayedSSEWriter struct {
+	writer  http.ResponseWriter
+	started bool
+}
+
+func newDelayedSSEWriter(w http.ResponseWriter) *delayedSSEWriter {
+	return &delayedSSEWriter{writer: w}
+}
+
+func (w *delayedSSEWriter) Write(p []byte) (int, error) {
+	if !w.started {
+		w.writer.Header().Set("Content-Type", "text/event-stream")
+		w.writer.Header().Set("Cache-Control", "no-cache")
+		w.writer.Header().Set("Connection", "keep-alive")
+		w.writer.Header().Set("X-Accel-Buffering", "no")
+		w.writer.WriteHeader(http.StatusOK)
+		w.started = true
+	}
+	return w.writer.Write(p)
+}
+
+func (w *delayedSSEWriter) Started() bool {
+	return w.started
+}
+
+func (w *delayedSSEWriter) WriteDone() {
+	_, _ = w.Write([]byte("data: [DONE]\n\n"))
+}
+
+func handleUpstreamStatus(w http.ResponseWriter, resp *http.Response) bool {
+	if resp.StatusCode == http.StatusOK {
+		return false
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to read response").WithCode(http.StatusBadGateway))
+		return true
+	}
+	sendError(w, apierror.MapStatus(resp.StatusCode, string(body)))
+	return true
+}
+
+func sendStreamZeroOutput(w http.ResponseWriter, streamWriter *delayedSSEWriter) {
+	apiErr := apierror.NewAPIError(apierror.ErrorTypeRateLimit, "Empty response from upstream (zero output tokens)").WithCode(http.StatusTooManyRequests)
+	if !streamWriter.Started() {
+		sendErrorWithRetryAfter(w, apiErr, emptyResponseRetryAfterSeconds)
+		return
+	}
+	data, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": apiErr.Message,
+			"type":    apiErr.Type,
+		},
+		"retry_after": emptyResponseRetryAfterSeconds,
+	})
+	_, _ = fmt.Fprintf(streamWriter.writer, "data: %s\n\n", string(data))
+}
+
+func timeoutMessage(count int64) string {
+	if count >= timeoutReduceContextThreshold {
+		return "Response timeout - try reducing context length (summarize earlier messages)"
+	}
+	return "Response timeout - request timed out"
+}
+
+func handleStreamingError(w http.ResponseWriter, streamWriter *delayedSSEWriter, logger *logging.Logger, err error) {
+	logger.Error("Streaming error", map[string]any{
+		"error": err.Error(),
+	})
+	if errors.Is(err, streaming.ErrStreamIdleTimeout) {
+		count := consecutiveTimeouts.Add(1)
+		sendStreamRetryableError(w, streamWriter, timeoutMessage(count), timeoutRetryAfterSeconds, http.StatusTooManyRequests)
+		return
+	}
+	if !streamWriter.Started() {
+		sendErrorWithRetryAfter(w, apierror.NewAPIError(apierror.ErrorTypeProxy, "Upstream streaming error").WithCode(http.StatusBadGateway), emptyResponseRetryAfterSeconds)
+	}
+}
+
+func sendStreamRetryableError(w http.ResponseWriter, streamWriter *delayedSSEWriter, message string, retryAfter int, status int) {
+	apiErr := apierror.NewAPIError(apierror.ErrorTypeRateLimit, message).WithCode(status)
+	if !streamWriter.Started() {
+		sendErrorWithRetryAfter(w, apiErr, retryAfter)
+		return
+	}
+	data, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": apiErr.Message,
+			"type":    apiErr.Type,
+		},
+		"retry_after": retryAfter,
+	})
+	_, _ = fmt.Fprintf(streamWriter.writer, "data: %s\n\n", string(data))
+}
+
+func decodeRequestBody(body io.Reader, target any) *apierror.APIError {
+	decoder := json.NewDecoder(body)
+	if err := decoder.Decode(target); err != nil {
+		if strings.Contains(err.Error(), "http: request body too large") {
+			return apierror.NewAPIError(apierror.ErrorTypeInvalidRequest, "Request body exceeds 10MB limit").WithCode(http.StatusRequestEntityTooLarge)
+		}
+		return apierror.NewAPIError(apierror.ErrorTypeInvalidRequest, "Invalid request body").WithCode(http.StatusBadRequest)
+	}
+	return nil
+}
+
+func commandCodeStreamToOpenAI(reader io.Reader, model string, completionID string, created int64, logger *logging.Logger) (*protocol.OpenAIResponse, error) {
+	return commandCodeStreamToOpenAIWithIdleTimeout(reader, model, completionID, created, logger, 0)
+}
+
+func commandCodeStreamToOpenAIWithIdleTimeout(reader io.Reader, model string, completionID string, created int64, logger *logging.Logger, idleTimeout time.Duration) (*protocol.OpenAIResponse, error) {
+	lines := streaming.ScanLines(reader)
+	var content strings.Builder
+	var reasoningContent strings.Builder
+	finishReason := "stop"
+	usage := &protocol.Usage{}
+	var toolCalls []protocol.ToolCall
+
+	for {
+		line, err := streaming.NextLine(lines, idleTimeout)
+		if err != nil {
+			if errors.Is(err, streaming.ErrStreamIdleTimeout) {
+				count := consecutiveTimeouts.Add(1)
+				message := timeoutMessage(count)
+				return nil, apierror.NewAPIError(apierror.ErrorTypeRateLimit, message).WithCode(http.StatusTooManyRequests)
+			}
+			return nil, err
+		}
+		if line == "" {
+			break
+		}
+		if line == "" || line == "[DONE]" {
+			continue
+		}
+
+		var event streaming.CommandCodeEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			return nil, err
+		}
+
+		switch event.Type {
+		case "text-delta":
+			content.WriteString(streaming.TextDeltaContent(event))
+		case "text":
+			content.WriteString(event.Text)
+		case "delta":
+			content.WriteString(event.Delta)
+		case "reasoning-delta":
+			reasoningContent.WriteString(event.Text)
+		case "tool-call", "toolCall":
+			arguments := "{}"
+			if event.Input != nil {
+				if inputString, ok := event.Input.(string); ok {
+					arguments = inputString
+				} else if inputBytes, err := json.Marshal(event.Input); err == nil {
+					arguments = string(inputBytes)
+				}
+			}
+			toolCalls = append(toolCalls, protocol.ToolCall{
+				ID:   event.ToolCallID,
+				Type: "function",
+				Function: protocol.FunctionCall{
+					Name:      event.ToolName,
+					Arguments: arguments,
+				},
+			})
+		case "finish", "finish-step":
+			if event.FinishReason != "" {
+				finishReason = event.FinishReason
+			}
+			if event.TotalUsage != nil {
+				usage.InputTokens = event.TotalUsage.InputTokens
+				usage.OutputTokens = event.TotalUsage.OutputTokens
+				usage.CachedInputTokens = event.TotalUsage.CachedInputTokens
+			} else if event.Usage != nil {
+				usage.InputTokens = event.Usage.InputTokens
+				usage.OutputTokens = event.Usage.OutputTokens
+				usage.CachedInputTokens = event.Usage.CachedInputTokens
+			}
+		case "error":
+			if logger != nil {
+				logger.Warn("CommandCode stream error event", map[string]any{
+					"message": commandCodeEventMessage(event),
+				})
+			}
+		}
+	}
+
+	if usage.OutputTokens == 0 {
+		return nil, apierror.NewAPIError(apierror.ErrorTypeRateLimit, "Empty response from upstream (zero output tokens)").WithCode(http.StatusTooManyRequests)
+	}
+
+	contentText := content.String()
+	reasoningText := reasoningContent.String()
+	message := &protocol.OpenAIMessage{Role: "assistant", Content: contentText}
+	if contentText == "" && len(toolCalls) > 0 {
+		message.Content = nil
+	}
+	if reasoningText != "" {
+		message.ReasoningContent = reasoningText
+	}
+	if len(toolCalls) > 0 {
+		message.ToolCalls = toolCalls
+	}
+
+	return &protocol.OpenAIResponse{
+		ID:      completionID,
+		Object:  "chat.completion",
+		Created: created,
+		Model:   model,
+		Choices: []protocol.OpenAIChoice{
+			{
+				Index:        0,
+				Message:      message,
+				FinishReason: finishReason,
+			},
+		},
+		Usage: usage,
+	}, nil
+}
+
+// commandCodeEventMessage returns a sanitized stream event message for logs.
+func commandCodeEventMessage(event streaming.CommandCodeEvent) string {
+	if event.Error != nil && event.Error.Message != "" {
+		return event.Error.Message
+	}
+	return event.Message
+}
+
+// sendError sends an error response in OpenAI/Anthropic format
+func sendError(w http.ResponseWriter, apiErr *apierror.APIError) {
+	sendErrorResponse(w, apiErr, 0)
+}
+
+// sendErrorWithRetryAfter sends an error response with retry hints.
+func sendErrorWithRetryAfter(w http.ResponseWriter, apiErr *apierror.APIError, retryAfter int) {
+	sendErrorResponse(w, apiErr, retryAfter)
+}
+
+func sendErrorResponse(w http.ResponseWriter, apiErr *apierror.APIError, retryAfter int) {
+	w.Header().Set("Content-Type", "application/json")
+	if retryAfter > 0 {
+		w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+	}
+	if apiErr.Code == 0 {
+		apiErr.Code = http.StatusInternalServerError
+	}
+	w.WriteHeader(apiErr.Code)
+
+	errorResp := map[string]any{
+		"error": map[string]any{
+			"type":    apiErr.Type,
+			"message": apiErr.Message,
+		},
+	}
+	if retryAfter > 0 {
+		errorResp["retry_after"] = retryAfter
+	}
+
+	json.NewEncoder(w).Encode(errorResp)
+}
+
+// generateCompletionID generates a random completion ID
+func generateCompletionID() string {
+	return fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+}
+
+// generateMessageID generates a random message ID
+func generateMessageID() string {
+	return fmt.Sprintf("msg_%d", time.Now().UnixNano())
+}

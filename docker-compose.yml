@@ -1,0 +1,17 @@
+name: commandcode-bridge
+
+services:
+  proxy:
+    build: .
+    container_name: commandcode-bridge-proxy
+    ports:
+      - "3050:3000"
+    environment:
+      - PORT=3000
+      - HOST=0.0.0.0
+      - COMMANDCODE_API_BASE=https://api.commandcode.ai
+      - LOG_LEVEL=info
+    volumes:
+      - ./data/config.json:/app/config.json
+      - ./data/logs:/app/data/logs
+    restart: unless-stopped
