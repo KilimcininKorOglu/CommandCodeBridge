@@ -44,6 +44,8 @@ It accepts local client requests, converts OpenAI or Anthropic payloads into the
 4. Copy the example config:
 
    ```bash
+   git clone https://github.com/KilimcininKorOglu/CommandCodeBridge
+   cd CommandCodeBridge/
    cp data/config.example.json data/config.json
    ```
 

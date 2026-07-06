@@ -44,6 +44,8 @@ Yerel client isteklerini kabul eder, OpenAI veya Anthropic payloadlarını Comma
 4. Örnek config dosyasını kopyalayın:
 
    ```bash
+   git clone https://github.com/KilimcininKorOglu/CommandCodeBridge
+   cd CommandCodeBridge/
    cp data/config.example.json data/config.json
    ```
 
