@@ -356,3 +356,7 @@ Do not log or expose:
 The service accepts user-controlled payloads and forwards them upstream. Preserve request size limits, timeouts, upstream error handling, and header filtering when changing HTTP, protocol, or streaming code.
 
 When adding SQL, shell execution, template rendering, file access, or new outbound HTTP behavior, evaluate the related OWASP Top 10 risks before implementation.
+
+## Lisans
+
+Research only.
