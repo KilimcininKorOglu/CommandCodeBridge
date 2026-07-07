@@ -18,7 +18,7 @@ func CORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Proxy-Token")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Proxy-Token, x-api-key, anthropic-version, anthropic-beta")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
@@ -58,6 +58,8 @@ func AuthMiddleware(cfg *config.Config, logger *logging.Logger) func(http.Handle
 }
 
 // proxyTokenFromRequest validates the configured proxy token when it is enabled.
+// It checks X-Proxy-Token, Authorization Bearer, and x-api-key headers because
+// Anthropic SDK clients (e.g., Claude Code CLI) send credentials via x-api-key.
 func proxyTokenFromRequest(headers http.Header, proxyToken string) bool {
 	if proxyToken == "" {
 		return true
@@ -69,6 +71,9 @@ func proxyTokenFromRequest(headers http.Header, proxyToken string) bool {
 		if strings.HasPrefix(auth, "Bearer ") {
 			provided = auth[7:]
 		}
+	}
+	if provided == "" {
+		provided = headers.Get("x-api-key")
 	}
 
 	return subtle.ConstantTimeCompare([]byte(provided), []byte(proxyToken)) == 1

@@ -254,6 +254,34 @@ OpenAI requestleri `type: "function"` içeren `tools` ve OpenAI style `tool_choi
 
 Anthropic `/v1/messages` sunulurken OpenAI response `tool_calls` değerleri Anthropic `tool_use` content blocklarına dönüştürülür.
 
+## Claude Code CLI Entegrasyonu
+
+Claude Code CLI kimlik doğrulaması için `x-api-key` header'ını kullanır (Anthropic SDK kuralı). CommandCode Bridge `proxy_token` değerini `X-Proxy-Token`, `Authorization: Bearer` ve `x-api-key` header'larından kabul eder.
+
+Claude Code CLI'yi proxy üzerinden Anthropic uyumlu sağlayıcı olarak yapılandırma:
+
+Claude Code CLI başlatılmadan önce environment variable tanımlama:
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:3050
+export ANTHROPIC_API_KEY=<proxy_token>
+export ANTHROPIC_MODEL=deepseek/deepseek-v4-pro[1m]
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-5.2:cloud[1m]
+export CLAUDE_CODE_SUBAGENT_MODEL=glm-5.2:cloud[1m]
+export ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.2:cloud[1m]
+export ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2:cloud[1m]
+claude
+```
+
+`<proxy_token>` değerini `data/config.json` içindeki `proxy_token` ile değiştirin. Proxy upstream CommandCode istekleri için config'deki `cc_apiKey` değerini kullanır.
+
+Kullanılabilir modeller:
+
+```bash
+curl http://127.0.0.1:3050/v1/models \
+  -H 'x-api-key: <proxy_token>'
+```
+
 ## Image Inputs
 
 Protocol conversion şunları destekler:

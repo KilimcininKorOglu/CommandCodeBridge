@@ -75,3 +75,21 @@ func TestAPIKeyFromRequestRejectsProxyTokenAsCommandCodeKey(t *testing.T) {
 		t.Fatalf("ccAPIKeyFromRequest() accepted proxy token %q, want rejection", apiKey)
 	}
 }
+
+func TestProxyTokenFromRequestAcceptsXAPIKeyHeader(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("x-api-key", "my-proxy-token")
+
+	if !proxyTokenFromRequest(headers, "my-proxy-token") {
+		t.Fatal("expected proxy token to be accepted from x-api-key header")
+	}
+}
+
+func TestProxyTokenFromRequestRejectsWrongXAPIKey(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("x-api-key", "wrong-token")
+
+	if proxyTokenFromRequest(headers, "my-proxy-token") {
+		t.Fatal("expected wrong x-api-key proxy token to be rejected")
+	}
+}
