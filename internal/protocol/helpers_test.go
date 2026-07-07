@@ -32,14 +32,19 @@ func TestAnthropicToOpenAIConvertsBase64ImageSource(t *testing.T) {
 		t.Fatalf("AnthropicToOpenAI() returned error: %v", err)
 	}
 
-	content, ok := openAIReq.Messages[0].Content.([]map[string]interface{})
+	content, ok := openAIReq.Messages[0].Content.([]any)
 	if !ok {
 		t.Fatalf("expected OpenAI content blocks, got %T", openAIReq.Messages[0].Content)
 	}
 
-	imageURL, ok := content[1]["image_url"].(map[string]string)
+	imageBlock, ok := content[1].(map[string]any)
 	if !ok {
-		t.Fatalf("expected image_url block, got %T", content[1]["image_url"])
+		t.Fatalf("expected content block map, got %T", content[1])
+	}
+
+	imageURL, ok := imageBlock["image_url"].(map[string]string)
+	if !ok {
+		t.Fatalf("expected image_url block, got %T", imageBlock["image_url"])
 	}
 
 	if got, want := imageURL["url"], "data:image/png;base64,iVBORw0KGgo="; got != want {

@@ -314,7 +314,7 @@ func anthropicMessageToOpenAI(msg AnthropicMessage) (OpenAIMessage, error) {
 	case string:
 		openaiMsg.Content = v
 	case []any:
-		content := make([]map[string]any, 0)
+		content := make([]any, 0)
 		for _, item := range v {
 			if itemMap, ok := item.(map[string]any); ok {
 				if itemType, ok := itemMap["type"].(string); ok {
@@ -357,9 +357,21 @@ func anthropicMessageToOpenAI(msg AnthropicMessage) (OpenAIMessage, error) {
 						}
 					case "tool_result":
 						if toolUseID, ok := itemMap["tool_use_id"].(string); ok {
-							if contentStr, ok := itemMap["content"].(string); ok {
-								openaiMsg.ToolCallID = toolUseID
-								openaiMsg.Content = contentStr
+							openaiMsg.Role = "tool"
+							openaiMsg.ToolCallID = toolUseID
+							switch contentVal := itemMap["content"].(type) {
+							case string:
+								openaiMsg.Content = contentVal
+							case []any:
+								var parts []string
+								for _, part := range contentVal {
+									if partMap, ok := part.(map[string]any); ok {
+										if text, ok := partMap["text"].(string); ok {
+											parts = append(parts, text)
+										}
+									}
+								}
+								openaiMsg.Content = strings.Join(parts, "\n")
 							}
 						}
 					}
