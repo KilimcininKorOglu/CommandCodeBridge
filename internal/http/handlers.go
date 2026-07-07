@@ -96,7 +96,7 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 
 		// Handle streaming response
 		if openaiReq.Stream {
-			if handled := handleUpstreamStatus(w, resp); handled {
+			if handled := handleUpstreamStatus(w, resp, deps.Logger); handled {
 				return
 			}
 
@@ -125,6 +125,9 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 				return
 			}
 			apiErr := apierror.MapStatus(resp.StatusCode, string(body))
+			deps.Logger.Warn("Upstream non-200 response", map[string]any{
+				"status": resp.StatusCode,
+			})
 			sendError(w, apiErr)
 			return
 		}
@@ -205,7 +208,7 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 
 		// Handle streaming response
 		if anthropicReq.Stream {
-			if handled := handleUpstreamStatus(w, resp); handled {
+			if handled := handleUpstreamStatus(w, resp, deps.Logger); handled {
 				return
 			}
 
@@ -233,6 +236,9 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 				return
 			}
 			apiErr := apierror.MapStatus(resp.StatusCode, string(body))
+			deps.Logger.Warn("Upstream non-200 response", map[string]any{
+				"status": resp.StatusCode,
+			})
 			sendError(w, apiErr)
 			return
 		}
@@ -324,7 +330,7 @@ func (w *delayedSSEWriter) WriteDone() {
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 }
 
-func handleUpstreamStatus(w http.ResponseWriter, resp *http.Response) bool {
+func handleUpstreamStatus(w http.ResponseWriter, resp *http.Response, logger *logging.Logger) bool {
 	if resp.StatusCode == http.StatusOK {
 		return false
 	}
@@ -333,6 +339,9 @@ func handleUpstreamStatus(w http.ResponseWriter, resp *http.Response) bool {
 		sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to read response").WithCode(http.StatusBadGateway))
 		return true
 	}
+	logger.Warn("Upstream non-200 response", map[string]any{
+		"status": resp.StatusCode,
+	})
 	sendError(w, apierror.MapStatus(resp.StatusCode, string(body)))
 	return true
 }
