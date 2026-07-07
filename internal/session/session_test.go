@@ -6,8 +6,15 @@ import (
 	"time"
 )
 
+// noopLogger is a test logger that discards all output.
+type noopLogger struct{}
+
+func (noopLogger) Debug(string, map[string]interface{}) {}
+func (noopLogger) Info(string, map[string]interface{})  {}
+func (noopLogger) Warn(string, map[string]interface{})  {}
+
 func TestResolveUsesSessionIDHeader(t *testing.T) {
-	store := NewStore(time.Hour, 0)
+	store := NewStore(time.Hour, 0, noopLogger{})
 	headers := http.Header{}
 	headers.Set("X-Session-Id", "session-123")
 
@@ -17,7 +24,7 @@ func TestResolveUsesSessionIDHeader(t *testing.T) {
 }
 
 func TestResolveUsesClaudeCodeSessionIDHeader(t *testing.T) {
-	store := NewStore(time.Hour, 0)
+	store := NewStore(time.Hour, 0, noopLogger{})
 	headers := http.Header{}
 	headers.Set("X-Claude-Code-Session-Id", "claude-session-123")
 
@@ -27,7 +34,7 @@ func TestResolveUsesClaudeCodeSessionIDHeader(t *testing.T) {
 }
 
 func TestResolveFallsBackToStoredSession(t *testing.T) {
-	store := NewStore(time.Hour, 0)
+	store := NewStore(time.Hour, 0, noopLogger{})
 	headers := http.Header{}
 
 	first := store.Resolve(headers, "user_test")

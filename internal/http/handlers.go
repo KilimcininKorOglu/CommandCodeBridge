@@ -57,9 +57,20 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 		// Parse request body
 		var openaiReq protocol.OpenAIRequest
 		if apiErr := decodeRequestBody(r.Body, &openaiReq); apiErr != nil {
+			deps.Logger.Warn("Failed to parse OpenAI request body", map[string]any{
+				"error": apiErr.Message,
+			})
 			sendError(w, apiErr)
 			return
 		}
+
+		deps.Logger.Debug("OpenAI request received", map[string]any{
+			"model":      openaiReq.Model,
+			"stream":     openaiReq.Stream,
+			"max_tokens": openaiReq.MaxTokens,
+			"messages":   len(openaiReq.Messages),
+			"tools":      len(openaiReq.Tools),
+		})
 
 		// Get session ID
 		sessionID := deps.SessionStore.Resolve(r.Header, ccAPIKey)
@@ -67,7 +78,7 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 		// Convert to CommandCode format
 		ccReq, err := protocol.OpenAIToCommandCode(&openaiReq)
 		if err != nil {
-			deps.Logger.Error("Failed to convert request", map[string]any{
+			deps.Logger.Error("Failed to convert OpenAI request to CommandCode", map[string]any{
 				"error": err.Error(),
 			})
 			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to convert request").WithCode(http.StatusInternalServerError))
@@ -77,6 +88,9 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 		// Marshal CommandCode request
 		ccBody, err := json.Marshal(ccReq)
 		if err != nil {
+			deps.Logger.Error("Failed to marshal CommandCode request", map[string]any{
+				"error": err.Error(),
+			})
 			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to marshal request").WithCode(http.StatusInternalServerError))
 			return
 		}
@@ -110,6 +124,7 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 			_, outputTokens, _ := translator.GetUsage()
 			if outputTokens == 0 {
 				cancel()
+				deps.Logger.Warn("Zero output tokens from upstream (OpenAI streaming)", nil)
 				sendStreamZeroOutput(w, streamWriter)
 				return
 			}
@@ -121,6 +136,9 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 		if resp.StatusCode != http.StatusOK {
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
+				deps.Logger.Error("Failed to read upstream response body", map[string]any{
+					"error": err.Error(),
+				})
 				sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to read response").WithCode(http.StatusBadGateway))
 				return
 			}
@@ -138,6 +156,9 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 				sendError(w, apiErr)
 				return
 			}
+			deps.Logger.Error("Failed to parse upstream response", map[string]any{
+				"error": err.Error(),
+			})
 			sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to parse response").WithCode(http.StatusBadGateway))
 			return
 		}
@@ -162,14 +183,25 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 		// Parse request body
 		var anthropicReq protocol.AnthropicRequest
 		if apiErr := decodeRequestBody(r.Body, &anthropicReq); apiErr != nil {
+			deps.Logger.Warn("Failed to parse Anthropic request body", map[string]any{
+				"error": apiErr.Message,
+			})
 			sendError(w, apiErr)
 			return
 		}
 
+		deps.Logger.Debug("Anthropic request received", map[string]any{
+			"model":      anthropicReq.Model,
+			"stream":     anthropicReq.Stream,
+			"max_tokens": anthropicReq.MaxTokens,
+			"messages":   len(anthropicReq.Messages),
+			"tools":      len(anthropicReq.Tools),
+		})
+
 		// Convert to OpenAI format
 		openaiReq, err := protocol.AnthropicToOpenAI(&anthropicReq)
 		if err != nil {
-			deps.Logger.Error("Failed to convert request", map[string]any{
+			deps.Logger.Error("Failed to convert Anthropic request to OpenAI", map[string]any{
 				"error": err.Error(),
 			})
 			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to convert request").WithCode(http.StatusInternalServerError))
@@ -182,6 +214,9 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 		// Convert to CommandCode format
 		ccReq, err := protocol.OpenAIToCommandCode(openaiReq)
 		if err != nil {
+			deps.Logger.Error("Failed to convert OpenAI request to CommandCode", map[string]any{
+				"error": err.Error(),
+			})
 			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to convert request").WithCode(http.StatusInternalServerError))
 			return
 		}
@@ -189,6 +224,9 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 		// Marshal CommandCode request
 		ccBody, err := json.Marshal(ccReq)
 		if err != nil {
+			deps.Logger.Error("Failed to marshal CommandCode request", map[string]any{
+				"error": err.Error(),
+			})
 			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to marshal request").WithCode(http.StatusInternalServerError))
 			return
 		}
@@ -221,6 +259,7 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 			consecutiveTimeouts.Store(0)
 			if translator.OutputTokens() == 0 {
 				cancel()
+				deps.Logger.Warn("Zero output tokens from upstream (Anthropic streaming)", nil)
 				sendStreamZeroOutput(w, streamWriter)
 				return
 			}
@@ -232,6 +271,9 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 		if resp.StatusCode != http.StatusOK {
 			body, err := io.ReadAll(resp.Body)
 			if err != nil {
+				deps.Logger.Error("Failed to read upstream response body", map[string]any{
+					"error": err.Error(),
+				})
 				sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to read response").WithCode(http.StatusBadGateway))
 				return
 			}
@@ -249,12 +291,18 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 				sendError(w, apiErr)
 				return
 			}
+			deps.Logger.Error("Failed to parse upstream response", map[string]any{
+				"error": err.Error(),
+			})
 			sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to parse response").WithCode(http.StatusBadGateway))
 			return
 		}
 
 		anthropicResp, err := protocol.OpenAIToAnthropic(openaiResp)
 		if err != nil {
+			deps.Logger.Error("Failed to convert OpenAI response to Anthropic", map[string]any{
+				"error": err.Error(),
+			})
 			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to convert response").WithCode(http.StatusInternalServerError))
 			return
 		}
@@ -375,6 +423,9 @@ func handleStreamingError(w http.ResponseWriter, streamWriter *delayedSSEWriter,
 	})
 	if errors.Is(err, streaming.ErrStreamIdleTimeout) {
 		count := consecutiveTimeouts.Add(1)
+		logger.Warn("Stream idle timeout", map[string]any{
+			"consecutive": count,
+		})
 		sendStreamRetryableError(w, streamWriter, timeoutMessage(count), timeoutRetryAfterSeconds, http.StatusTooManyRequests)
 		return
 	}
@@ -493,6 +544,9 @@ func commandCodeStreamToOpenAIWithIdleTimeout(reader io.Reader, model string, co
 	}
 
 	if usage.OutputTokens == 0 {
+		if logger != nil {
+			logger.Warn("Zero output tokens from upstream (non-streaming)", nil)
+		}
 		return nil, apierror.NewAPIError(apierror.ErrorTypeRateLimit, "Empty response from upstream (zero output tokens)").WithCode(http.StatusTooManyRequests)
 	}
 

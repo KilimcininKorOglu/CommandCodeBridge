@@ -11,6 +11,7 @@ services:
       - HOST=0.0.0.0
       - COMMANDCODE_API_BASE=https://api.commandcode.ai
       - LOG_LEVEL=info
+      - LOG_FILE=/app/data/logs/proxy.log
     volumes:
       - ./data/config.json:/app/config.json
       - ./data/logs:/app/data/logs

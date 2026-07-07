@@ -96,11 +96,17 @@ func (m *InitManager) sendFingerprintRecord(ctx context.Context, fp *config.Fing
 
 	body, err := json.Marshal(fp)
 	if err != nil {
+		m.logger.Error("Failed to marshal fingerprint record", map[string]any{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to marshal fingerprint: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
+		m.logger.Error("Failed to create fingerprint record request", map[string]any{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -111,11 +117,17 @@ func (m *InitManager) sendFingerprintRecord(ctx context.Context, fp *config.Fing
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		m.logger.Error("Failed to send fingerprint record to upstream", map[string]any{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		m.logger.Warn("Fingerprint record API returned non-200", map[string]any{
+			"status": resp.StatusCode,
+		})
 		return fmt.Errorf("fingerprint record returned status %d", resp.StatusCode)
 	}
 
@@ -141,11 +153,17 @@ func (m *InitManager) sendLifecycleEvent(ctx context.Context, fp *config.Fingerp
 
 	body, err := json.Marshal(event)
 	if err != nil {
+		m.logger.Error("Failed to marshal lifecycle event", map[string]any{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
+		m.logger.Error("Failed to create lifecycle event request", map[string]any{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -157,11 +175,17 @@ func (m *InitManager) sendLifecycleEvent(ctx context.Context, fp *config.Fingerp
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
+		m.logger.Error("Failed to send lifecycle event to upstream", map[string]any{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to send request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		m.logger.Warn("Lifecycle event API returned non-200", map[string]any{
+			"status": resp.StatusCode,
+		})
 		return fmt.Errorf("lifecycle event returned status %d", resp.StatusCode)
 	}
 

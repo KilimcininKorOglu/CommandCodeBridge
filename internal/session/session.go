@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+// Logger is the interface for session store logging.
+type Logger interface {
+	Debug(msg string, fields map[string]interface{})
+	Info(msg string, fields map[string]interface{})
+	Warn(msg string, fields map[string]interface{})
+}
+
 // Session represents a user session
 type Session struct {
 	ID        string
@@ -21,14 +28,16 @@ type SessionStore struct {
 	duration time.Duration
 	jitter   time.Duration
 	stopChan chan struct{}
+	logger   Logger
 }
 
 // NewStore creates a new session store with specified duration and jitter
-func NewStore(duration, jitter time.Duration) *SessionStore {
+func NewStore(duration, jitter time.Duration, logger Logger) *SessionStore {
 	return &SessionStore{
 		duration: duration,
 		jitter:   jitter,
 		stopChan: make(chan struct{}),
+		logger:   logger,
 	}
 }
 
@@ -59,6 +68,11 @@ func (s *SessionStore) Create(ccAPIKey string) string {
 	}
 
 	s.sessions.Store(ccAPIKey, session)
+	if s.logger != nil {
+		s.logger.Debug("Session created", map[string]interface{}{
+			"expires_in": s.duration.String(),
+		})
+	}
 	return sessionID
 }
 
@@ -87,8 +101,10 @@ func (s *SessionStore) StartCleanup(interval time.Duration) {
 			select {
 			case <-ticker.C:
 				removed := s.Cleanup()
-				if removed > 0 {
-					// Log cleanup if needed
+				if removed > 0 && s.logger != nil {
+					s.logger.Debug("Expired sessions cleaned up", map[string]interface{}{
+						"removed": removed,
+					})
 				}
 			case <-s.stopChan:
 				ticker.Stop()

@@ -44,6 +44,9 @@ func (c *Client) Forward(ctx context.Context, body []byte, cc_apiKey string, hea
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
+		c.logger.Error("Failed to create upstream request", map[string]any{
+			"error": err.Error(),
+		})
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -87,10 +90,21 @@ func (c *Client) Forward(ctx context.Context, body []byte, cc_apiKey string, hea
 		}
 	}
 
+	c.logger.Debug("Forwarding request to upstream", map[string]any{
+		"session_id": sessionID,
+	})
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		c.logger.Error("Upstream request failed", map[string]any{
+			"error": err.Error(),
+		})
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
+
+	c.logger.Debug("Upstream response received", map[string]any{
+		"status": resp.StatusCode,
+	})
 
 	return resp, nil
 }
@@ -137,6 +151,9 @@ func (c *Client) FetchModels(ctx context.Context, cc_apiKey string) ([]Model, er
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
+		c.logger.Error("Failed to create models request", map[string]any{
+			"error": err.Error(),
+		})
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -145,19 +162,32 @@ func (c *Client) FetchModels(ctx context.Context, cc_apiKey string) ([]Model, er
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		c.logger.Error("Failed to fetch models from upstream", map[string]any{
+			"error": err.Error(),
+		})
 		return nil, fmt.Errorf("failed to fetch models: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		c.logger.Warn("Models API returned non-200", map[string]any{
+			"status": resp.StatusCode,
+		})
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("Provider API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	var modelList ModelList
 	if err := json.NewDecoder(resp.Body).Decode(&modelList); err != nil {
+		c.logger.Error("Failed to decode models response", map[string]any{
+			"error": err.Error(),
+		})
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+
+	c.logger.Debug("Models fetched from upstream", map[string]any{
+		"count": len(modelList.Data),
+	})
 
 	return modelList.Data, nil
 }
@@ -168,11 +198,17 @@ func (c *Client) SendFingerprint(ctx context.Context, fp *fingerprint.Fingerprin
 
 	body, err := json.Marshal(fp)
 	if err != nil {
+		c.logger.Error("Failed to marshal fingerprint", map[string]any{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to marshal fingerprint: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
+		c.logger.Error("Failed to create fingerprint request", map[string]any{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -181,14 +217,21 @@ func (c *Client) SendFingerprint(ctx context.Context, fp *fingerprint.Fingerprin
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		c.logger.Error("Failed to send fingerprint to upstream", map[string]any{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to send fingerprint: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		c.logger.Warn("Fingerprint API returned non-200", map[string]any{
+			"status": resp.StatusCode,
+		})
 		return fmt.Errorf("fingerprint API returned status %d", resp.StatusCode)
 	}
 
+	c.logger.Debug("Fingerprint sent to upstream", nil)
 	return nil
 }
 
@@ -202,11 +245,17 @@ func (c *Client) SendLifecycleEvent(ctx context.Context, cc_apiKey string, event
 
 	body, err := json.Marshal(event)
 	if err != nil {
+		c.logger.Error("Failed to marshal lifecycle event", map[string]any{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to marshal event: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
+		c.logger.Error("Failed to create lifecycle event request", map[string]any{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -215,14 +264,23 @@ func (c *Client) SendLifecycleEvent(ctx context.Context, cc_apiKey string, event
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		c.logger.Error("Failed to send lifecycle event to upstream", map[string]any{
+			"error": err.Error(),
+		})
 		return fmt.Errorf("failed to send lifecycle event: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		c.logger.Warn("Lifecycle API returned non-200", map[string]any{
+			"status": resp.StatusCode,
+		})
 		return fmt.Errorf("lifecycle API returned status %d", resp.StatusCode)
 	}
 
+	c.logger.Debug("Lifecycle event sent to upstream", map[string]any{
+		"event_type": eventType,
+	})
 	return nil
 }
 

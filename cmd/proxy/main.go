@@ -50,6 +50,13 @@ func main() {
 	}
 
 	logger := logging.New(logLevel, os.Stdout, logFile, false)
+	logger.Debug("Configuration loaded", map[string]any{
+		"config_path": *configPath,
+		"port":        cfg.Port,
+		"host":        cfg.Host,
+		"log_level":   cfg.LogLevel,
+		"log_file":    cfg.LogFile,
+	})
 	if err := version.RefreshCommandCodeVersion(); err != nil {
 		logger.Debug("Failed to refresh CommandCode version on startup", map[string]any{
 			"error": err.Error(),
@@ -106,9 +113,13 @@ func main() {
 	}
 
 	// Initialize session store
-	sessionStore := session.NewStore(12*time.Hour, 1*time.Hour)
+	sessionStore := session.NewStore(12*time.Hour, 1*time.Hour, logger)
 	sessionStore.StartCleanup(5 * time.Minute)
 	defer sessionStore.Stop()
+	logger.Debug("Session store initialized", map[string]any{
+		"duration":      "12h",
+		"cleanup_every": "5m",
+	})
 
 	// Initialize HTTP client
 	apiClient := client.New(cfg.APIBase, cfg.ProjectSlug, logger)

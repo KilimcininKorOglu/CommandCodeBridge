@@ -68,6 +68,7 @@ func (m *ModelManager) GetModels(ctx context.Context, ccAPIKey string) ([]Model,
 	// Fetch fresh models
 	var models []Model
 	var err error
+	source := "hardcoded"
 
 	if m.useProvider {
 		models, err = m.fetchFromProvider(ctx, ccAPIKey)
@@ -76,6 +77,8 @@ func (m *ModelManager) GetModels(ctx context.Context, ccAPIKey string) ([]Model,
 				"error": err.Error(),
 			})
 			models = GetHardcodedModels()
+		} else {
+			source = "provider"
 		}
 	} else {
 		models = GetHardcodedModels()
@@ -87,6 +90,11 @@ func (m *ModelManager) GetModels(ctx context.Context, ccAPIKey string) ([]Model,
 	m.lastRefresh = time.Now()
 	m.mu.Unlock()
 
+	m.logger.Info("Models refreshed", map[string]interface{}{
+		"count":  len(models),
+		"source": source,
+	})
+
 	return models, nil
 }
 
@@ -96,6 +104,9 @@ func (m *ModelManager) fetchFromProvider(ctx context.Context, ccAPIKey string) (
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
+		m.logger.Error("Failed to create models request", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -105,18 +116,31 @@ func (m *ModelManager) fetchFromProvider(ctx context.Context, ccAPIKey string) (
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
+		m.logger.Error("Failed to fetch models from Provider API", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return nil, fmt.Errorf("failed to fetch models: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		m.logger.Warn("Provider API returned non-200", map[string]interface{}{
+			"status": resp.StatusCode,
+		})
 		return nil, fmt.Errorf("Provider API returned status %d", resp.StatusCode)
 	}
 
 	var modelList ModelList
 	if err := json.NewDecoder(resp.Body).Decode(&modelList); err != nil {
+		m.logger.Error("Failed to decode models response", map[string]interface{}{
+			"error": err.Error(),
+		})
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+
+	m.logger.Debug("Models fetched from Provider API", map[string]interface{}{
+		"count": len(modelList.Data),
+	})
 
 	return modelList.Data, nil
 }
