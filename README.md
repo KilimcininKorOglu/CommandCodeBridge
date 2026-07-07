@@ -266,10 +266,10 @@ set environment variables before launching Claude Code CLI:
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3050
 export ANTHROPIC_API_KEY=<proxy_token>
 export ANTHROPIC_MODEL=deepseek/deepseek-v4-pro[1m]
-export ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-5.2:cloud[1m]
-export CLAUDE_CODE_SUBAGENT_MODEL=glm-5.2:cloud[1m]
-export ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5.2:cloud[1m]
-export ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5.2:cloud[1m]
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek/deepseek-v4-flash[1m]
+export CLAUDE_CODE_SUBAGENT_MODEL=deepseek/deepseek-v4-pro[1m]
+export ANTHROPIC_DEFAULT_SONNET_MODEL=deepseek/deepseek-v4-pro[1m]
+export ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek/deepseek-v4-pro[1m]
 claude
 ```
 
