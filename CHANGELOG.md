@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.2] - 2026-07-08
+
+### Added
+- Comprehensive request lifecycle logging across client, handlers, models, session, and main packages.
+- Debug-level logs for request received, session created, upstream forwarded, upstream status, config loaded, and session store initialized events.
+- Error-level logs for marshal, decode, and transport failures.
+- Warn-level logs for non-200 upstream responses and zero output token cases.
+- Explicit LOG_FILE environment variable in docker-compose.yml.
+- Logger argument to session.NewStore for session creation and cleanup logging.
+
 ## [1.1.1] - 2026-07-08
 
 ### Added
