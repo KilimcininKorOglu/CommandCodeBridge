@@ -6,5 +6,5 @@
   "projectSlug": "",
   "proxy_token": "test",
   "logFile": "data/logs/proxy.log",
-  "logLevel": "info"
+  "logLevel": "debug"
 }
