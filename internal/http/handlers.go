@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -198,23 +199,13 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 			"tools":      len(anthropicReq.Tools),
 		})
 
-		// Convert to OpenAI format
-		openaiReq, err := protocol.AnthropicToOpenAI(&anthropicReq)
-		if err != nil {
-			deps.Logger.Error("Failed to convert Anthropic request to OpenAI", map[string]any{
-				"error": err.Error(),
-			})
-			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to convert request").WithCode(http.StatusInternalServerError))
-			return
-		}
-
 		// Get session ID
 		sessionID := deps.SessionStore.Resolve(r.Header, ccAPIKey)
 
 		// Convert to CommandCode format
-		ccReq, err := protocol.OpenAIToCommandCode(openaiReq)
+		ccReq, err := protocol.AnthropicMessagesToCommandCode(&anthropicReq)
 		if err != nil {
-			deps.Logger.Error("Failed to convert OpenAI request to CommandCode", map[string]any{
+			deps.Logger.Error("Failed to convert Anthropic request to CommandCode", map[string]any{
 				"error": err.Error(),
 			})
 			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to convert request").WithCode(http.StatusInternalServerError))
@@ -285,7 +276,7 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 			return
 		}
 
-		openaiResp, err := commandCodeStreamToOpenAIWithIdleTimeout(resp.Body, openaiReq.Model, generateCompletionID(), time.Now().Unix(), deps.Logger, nonStreamIdleTimeout)
+		anthropicResp, err := commandCodeStreamToAnthropicMessagesWithIdleTimeout(resp.Body, anthropicReq.Model, generateMessageID(), deps.Logger, nonStreamIdleTimeout)
 		if err != nil {
 			if apiErr, ok := err.(*apierror.APIError); ok {
 				sendError(w, apiErr)
@@ -298,15 +289,6 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 			return
 		}
 
-		anthropicResp, err := protocol.OpenAIToAnthropic(openaiResp)
-		if err != nil {
-			deps.Logger.Error("Failed to convert OpenAI response to Anthropic", map[string]any{
-				"error": err.Error(),
-			})
-			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to convert response").WithCode(http.StatusInternalServerError))
-			return
-		}
-
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(anthropicResp)
 	}
@@ -315,8 +297,18 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 // HandleMessagesCountTokens handles Anthropic token counting requests.
 func HandleMessagesCountTokens(deps *HandlerDependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ccAPIKey := r.Context().Value("ccAPIKey").(string)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			deps.Logger.Warn("Failed to read Anthropic token count request body", map[string]any{
+				"error": err.Error(),
+			})
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInvalidRequest, "Invalid request body").WithCode(http.StatusBadRequest))
+			return
+		}
+
 		var req protocol.AnthropicRequest
-		if apiErr := decodeRequestBody(r.Body, &req); apiErr != nil {
+		if apiErr := decodeRequestBody(bytes.NewReader(body), &req); apiErr != nil {
 			deps.Logger.Warn("Failed to parse Anthropic token count request body", map[string]any{
 				"error": apiErr.Message,
 			})
@@ -324,53 +316,42 @@ func HandleMessagesCountTokens(deps *HandlerDependencies) http.HandlerFunc {
 			return
 		}
 
-		inputTokens := estimateAnthropicInputTokens(&req)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]int{"input_tokens": inputTokens})
-	}
-}
-
-func estimateAnthropicInputTokens(req *protocol.AnthropicRequest) int {
-	if req == nil {
-		return 0
-	}
-	bytesCount := len(req.Model) + len(req.Tools)*256
-	bytesCount += len(anthropicValueText(req.System))
-	for _, msg := range req.Messages {
-		bytesCount += len(msg.Role) + len(anthropicValueText(msg.Content))
-	}
-	if bytesCount == 0 {
-		return 0
-	}
-	return (bytesCount + 3) / 4
-}
-
-func anthropicValueText(value any) string {
-	switch v := value.(type) {
-	case nil:
-		return ""
-	case string:
-		return v
-	case []any:
-		var b strings.Builder
-		for _, item := range v {
-			b.WriteString(anthropicValueText(item))
-		}
-		return b.String()
-	case map[string]any:
-		var b strings.Builder
-		for _, key := range []string{"text", "content", "name", "description"} {
-			if text, ok := v[key].(string); ok {
-				b.WriteString(text)
-			}
-		}
-		return b.String()
-	default:
-		data, err := json.Marshal(v)
+		sessionID := deps.SessionStore.Resolve(r.Header, ccAPIKey)
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		resp, err := deps.Client.ForwardAnthropicCountTokens(ctx, body, ccAPIKey, r.Header, sessionID, deps.Config.Fingerprint, r.URL.RawQuery)
 		if err != nil {
-			return ""
+			deps.Logger.Error("Failed to forward token count request", map[string]any{
+				"error": err.Error(),
+			})
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to forward request").WithCode(http.StatusBadGateway))
+			return
 		}
-		return string(data)
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				deps.Logger.Error("Failed to read upstream token count response body", map[string]any{
+					"error": err.Error(),
+				})
+				sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to read response").WithCode(http.StatusBadGateway))
+				return
+			}
+			apiErr := apierror.MapStatus(resp.StatusCode, string(body))
+			deps.Logger.Warn("Upstream token count non-200 response", map[string]any{
+				"status": resp.StatusCode,
+			})
+			sendError(w, apiErr)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := io.Copy(w, resp.Body); err != nil {
+			deps.Logger.Error("Failed to write token count response", map[string]any{
+				"error": err.Error(),
+			})
+		}
 	}
 }
 
@@ -525,6 +506,115 @@ func decodeRequestBody(body io.Reader, target any) *apierror.APIError {
 
 func commandCodeStreamToOpenAI(reader io.Reader, model string, completionID string, created int64, logger *logging.Logger) (*protocol.OpenAIResponse, error) {
 	return commandCodeStreamToOpenAIWithIdleTimeout(reader, model, completionID, created, logger, 0)
+}
+
+func commandCodeStreamToAnthropicMessagesWithIdleTimeout(reader io.Reader, model string, messageID string, logger *logging.Logger, idleTimeout time.Duration) (*protocol.AnthropicResponse, error) {
+	lines := streaming.ScanLines(reader)
+	content, finishReason, usage, err := collectCommandCodeAnthropicContent(lines, logger, idleTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return protocol.CommandCodeToAnthropicMessages(messageID, model, content, finishReason, usage), nil
+}
+
+func collectCommandCodeAnthropicContent(lines <-chan streaming.StreamLine, logger *logging.Logger, idleTimeout time.Duration) ([]protocol.AnthropicContent, string, *protocol.Usage, error) {
+	var textContent strings.Builder
+	var reasoningContent strings.Builder
+	finishReason := "stop"
+	usage := &protocol.Usage{}
+	content := []protocol.AnthropicContent{}
+
+	flushText := func() {
+		if text := textContent.String(); text != "" {
+			content = append(content, protocol.AnthropicContent{Type: "text", Text: text})
+			textContent.Reset()
+		}
+	}
+	flushReasoning := func() {
+		if thinking := reasoningContent.String(); thinking != "" {
+			content = append(content, protocol.AnthropicContent{Type: "thinking", Thinking: thinking})
+			reasoningContent.Reset()
+		}
+	}
+
+	for {
+		line, err := streaming.NextLine(lines, idleTimeout)
+		if err != nil {
+			if errors.Is(err, streaming.ErrStreamIdleTimeout) {
+				count := consecutiveTimeouts.Add(1)
+				message := timeoutMessage(count)
+				return nil, "", nil, apierror.NewAPIError(apierror.ErrorTypeRateLimit, message).WithCode(http.StatusTooManyRequests)
+			}
+			return nil, "", nil, err
+		}
+		if line == "" {
+			break
+		}
+		if line == "" || line == "[DONE]" {
+			continue
+		}
+
+		var event streaming.CommandCodeEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			return nil, "", nil, err
+		}
+
+		switch event.Type {
+		case "text-delta":
+			flushReasoning()
+			textContent.WriteString(streaming.TextDeltaContent(event))
+		case "text":
+			flushReasoning()
+			textContent.WriteString(event.Text)
+		case "delta":
+			flushReasoning()
+			textContent.WriteString(event.Delta)
+		case "reasoning-delta":
+			flushText()
+			reasoningContent.WriteString(event.Text)
+		case "tool-call", "toolCall":
+			flushReasoning()
+			flushText()
+			input := map[string]any{}
+			if event.Input != nil {
+				if inputMap, ok := event.Input.(map[string]any); ok {
+					input = inputMap
+				} else if inputBytes, err := json.Marshal(event.Input); err == nil {
+					_ = json.Unmarshal(inputBytes, &input)
+				}
+			}
+			content = append(content, protocol.AnthropicContent{Type: "tool_use", ID: event.ToolCallID, Name: event.ToolName, Input: input})
+		case "finish", "finish-step":
+			if event.FinishReason != "" {
+				finishReason = event.FinishReason
+			}
+			if event.TotalUsage != nil {
+				usage.InputTokens = event.TotalUsage.InputTokens
+				usage.OutputTokens = event.TotalUsage.OutputTokens
+				usage.CachedInputTokens = event.TotalUsage.CachedInputTokens
+			} else if event.Usage != nil {
+				usage.InputTokens = event.Usage.InputTokens
+				usage.OutputTokens = event.Usage.OutputTokens
+				usage.CachedInputTokens = event.Usage.CachedInputTokens
+			}
+		case "error":
+			if logger != nil {
+				logger.Warn("CommandCode stream error event", map[string]any{
+					"message": commandCodeEventMessage(event),
+				})
+			}
+		}
+	}
+
+	flushReasoning()
+	flushText()
+	if usage.OutputTokens == 0 {
+		if logger != nil {
+			logger.Warn("Zero output tokens from upstream (non-streaming)", nil)
+		}
+		return nil, "", nil, apierror.NewAPIError(apierror.ErrorTypeRateLimit, "Empty response from upstream (zero output tokens)").WithCode(http.StatusTooManyRequests)
+	}
+	return content, finishReason, usage, nil
 }
 
 func commandCodeStreamToOpenAIWithIdleTimeout(reader io.Reader, model string, completionID string, created int64, logger *logging.Logger, idleTimeout time.Duration) (*protocol.OpenAIResponse, error) {

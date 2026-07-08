@@ -322,91 +322,72 @@ func anthropicSystemToString(system any) string {
 	}
 }
 
-// anthropicMessageToOpenAI converts an Anthropic message to OpenAI format
-func anthropicMessageToOpenAI(msg AnthropicMessage) (OpenAIMessage, error) {
-	openaiMsg := OpenAIMessage{
-		Role:    msg.Role,
-		Content: nil,
-	}
+// anthropicMessageToCommandCode converts an Anthropic message to CommandCode format.
+func anthropicMessageToCommandCode(msg AnthropicMessage) (CommandCodeMessage, error) {
+	ccMsg := CommandCodeMessage{Role: msg.Role}
 
-	// Handle content based on type
 	switch v := msg.Content.(type) {
 	case string:
-		openaiMsg.Content = v
-	case []any:
-		content := make([]any, 0)
-		for _, item := range v {
-			if itemMap, ok := item.(map[string]any); ok {
-				if itemType, ok := itemMap["type"].(string); ok {
-					switch itemType {
-					case "text":
-						if text, ok := itemMap["text"].(string); ok {
-							content = append(content, map[string]any{
-								"type": "text",
-								"text": text,
-							})
-						}
-					case "image":
-						if source, ok := itemMap["source"].(map[string]any); ok {
-							if url, ok := anthropicImageSourceToURL(source); ok {
-								content = append(content, map[string]any{
-									"type": "image_url",
-									"image_url": map[string]string{
-										"url": url,
-									},
-								})
-							}
-						}
-					case "tool_use":
-						if id, ok := itemMap["id"].(string); ok {
-							if name, ok := itemMap["name"].(string); ok {
-								if input, ok := itemMap["input"]; ok {
-									toolCall := ToolCall{
-										ID:   id,
-										Type: "function",
-										Function: FunctionCall{
-											Name: name,
-										},
-									}
-									if inputBytes, err := json.Marshal(input); err == nil {
-										toolCall.Function.Arguments = string(inputBytes)
-									}
-									openaiMsg.ToolCalls = append(openaiMsg.ToolCalls, toolCall)
-								}
-							}
-						}
-					case "tool_result":
-						if toolUseID, ok := itemMap["tool_use_id"].(string); ok {
-							openaiMsg.Role = "tool"
-							openaiMsg.ToolCallID = toolUseID
-							switch contentVal := itemMap["content"].(type) {
-							case string:
-								openaiMsg.Content = contentVal
-							case []any:
-								var parts []string
-								for _, part := range contentVal {
-									if partMap, ok := part.(map[string]any); ok {
-										if text, ok := partMap["text"].(string); ok {
-											parts = append(parts, text)
-										}
-									}
-								}
-								openaiMsg.Content = strings.Join(parts, "\n")
-							}
-						}
-					}
-				}
-			}
+		if v != "" {
+			ccMsg.Content = append(ccMsg.Content, CommandCodeContent{Type: "text", Text: v})
 		}
-		if len(content) > 0 {
-			openaiMsg.Content = content
+	case []any:
+		for _, item := range v {
+			itemMap, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			ccMsg.Content = append(ccMsg.Content, anthropicContentPartToCommandCode(itemMap)...)
+		}
+	default:
+		if text := contentPartToString(v); text != "" {
+			ccMsg.Content = append(ccMsg.Content, CommandCodeContent{Type: "text", Text: text})
 		}
 	}
 
-	return openaiMsg, nil
+	return ccMsg, nil
 }
 
-// anthropicImageSourceToURL converts an Anthropic image source into an OpenAI image URL.
+func anthropicContentPartToCommandCode(itemMap map[string]any) []CommandCodeContent {
+	itemType, _ := itemMap["type"].(string)
+	switch itemType {
+	case "text", "thinking", "redacted_thinking":
+		if text := contentPartToString(itemMap); text != "" {
+			return []CommandCodeContent{{Type: "text", Text: text}}
+		}
+	case "image":
+		if source, ok := itemMap["source"].(map[string]any); ok {
+			if url, ok := anthropicImageSourceToURL(source); ok {
+				return []CommandCodeContent{{Type: "image", Image: url}}
+			}
+		}
+	case "tool_use":
+		id := firstString(itemMap, "id", "toolCallId")
+		name := firstString(itemMap, "name", "toolName")
+		return []CommandCodeContent{{Type: "tool-call", ToolCallID: id, ToolName: name, Input: itemMap["input"]}}
+	case "tool_result":
+		output := contentPartToString(itemMap["content"])
+		outputType := "text"
+		if isError, ok := itemMap["is_error"].(bool); ok && isError {
+			outputType = "error-text"
+		}
+		return []CommandCodeContent{{
+			Type:       "tool-result",
+			ToolCallID: firstString(itemMap, "tool_use_id", "toolCallId"),
+			Output: &CommandCodeToolOutput{
+				Type:  outputType,
+				Value: output,
+			},
+		}}
+	default:
+		if text := contentPartToString(itemMap); text != "" {
+			return []CommandCodeContent{{Type: "text", Text: text}}
+		}
+	}
+	return nil
+}
+
+// anthropicImageSourceToURL converts an Anthropic image source into a URL string.
 func anthropicImageSourceToURL(source map[string]any) (string, bool) {
 	if url, ok := source["url"].(string); ok && url != "" {
 		return url, true
@@ -429,14 +410,12 @@ func anthropicImageSourceToURL(source map[string]any) (string, bool) {
 	return fmt.Sprintf("data:%s;base64,%s", mediaType, data), true
 }
 
-// anthropicToolToOpenAI converts an Anthropic tool to OpenAI format
-func anthropicToolToOpenAI(tool AnthropicTool) OpenAITool {
-	return OpenAITool{
-		Type: "function",
-		Function: OpenAIToolFunction{
-			Name:        tool.Name,
-			Description: tool.Description,
-			Parameters:  tool.InputSchema,
-		},
+// anthropicToolToCommandCode converts an Anthropic tool to CommandCode format.
+func anthropicToolToCommandCode(tool AnthropicTool) CommandCodeTool {
+	return CommandCodeTool{
+		Type:        "function",
+		Name:        tool.Name,
+		Description: tool.Description,
+		InputSchema: tool.InputSchema,
 	}
 }

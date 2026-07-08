@@ -2,21 +2,21 @@ package protocol
 
 import "testing"
 
-func TestAnthropicToOpenAIConvertsBase64ImageSource(t *testing.T) {
+func TestAnthropicMessagesToCommandCodeConvertsBase64ImageSource(t *testing.T) {
 	req := &AnthropicRequest{
 		Model:     "claude-sonnet-5",
 		MaxTokens: 128,
 		Messages: []AnthropicMessage{
 			{
 				Role: "user",
-				Content: []interface{}{
-					map[string]interface{}{
+				Content: []any{
+					map[string]any{
 						"type": "text",
 						"text": "Describe this image.",
 					},
-					map[string]interface{}{
+					map[string]any{
 						"type": "image",
-						"source": map[string]interface{}{
+						"source": map[string]any{
 							"type":       "base64",
 							"media_type": "image/png",
 							"data":       "iVBORw0KGgo=",
@@ -27,33 +27,25 @@ func TestAnthropicToOpenAIConvertsBase64ImageSource(t *testing.T) {
 		},
 	}
 
-	openAIReq, err := AnthropicToOpenAI(req)
+	ccReq, err := AnthropicMessagesToCommandCode(req)
 	if err != nil {
-		t.Fatalf("AnthropicToOpenAI() returned error: %v", err)
+		t.Fatalf("AnthropicMessagesToCommandCode() returned error: %v", err)
 	}
 
-	content, ok := openAIReq.Messages[0].Content.([]any)
-	if !ok {
-		t.Fatalf("expected OpenAI content blocks, got %T", openAIReq.Messages[0].Content)
+	content := ccReq.Params.Messages[0].Content
+	if got, want := len(content), 2; got != want {
+		t.Fatalf("len(Content) = %d, want %d", got, want)
 	}
-
-	imageBlock, ok := content[1].(map[string]any)
-	if !ok {
-		t.Fatalf("expected content block map, got %T", content[1])
+	if got, want := content[1].Type, "image"; got != want {
+		t.Fatalf("Content[1].Type = %q, want %q", got, want)
 	}
-
-	imageURL, ok := imageBlock["image_url"].(map[string]string)
-	if !ok {
-		t.Fatalf("expected image_url block, got %T", imageBlock["image_url"])
-	}
-
-	if got, want := imageURL["url"], "data:image/png;base64,iVBORw0KGgo="; got != want {
-		t.Fatalf("image_url.url = %q, want %q", got, want)
+	if got, want := content[1].Image, "data:image/png;base64,iVBORw0KGgo="; got != want {
+		t.Fatalf("Content[1].Image = %q, want %q", got, want)
 	}
 }
 
-func TestAnthropicToOpenAIKeepsDataURLImageSource(t *testing.T) {
-	source := map[string]interface{}{
+func TestAnthropicImageSourceToURLKeepsDataURL(t *testing.T) {
+	source := map[string]any{
 		"type":       "base64",
 		"media_type": "image/jpeg",
 		"data":       "data:image/jpeg;base64,/9j/4AAQSkZJRg==",

@@ -109,6 +109,77 @@ func (c *Client) Forward(ctx context.Context, body []byte, cc_apiKey string, hea
 	return resp, nil
 }
 
+// ForwardAnthropicCountTokens forwards an Anthropic token count request to the upstream API.
+func (c *Client) ForwardAnthropicCountTokens(ctx context.Context, body []byte, cc_apiKey string, headers http.Header, sessionID string, fp *config.Fingerprint, rawQuery string) (*http.Response, error) {
+	url := fmt.Sprintf("%s/v1/messages/count_tokens", c.apiBase)
+	if rawQuery != "" {
+		url += "?" + rawQuery
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		c.logger.Error("Failed to create upstream token count request", map[string]any{
+			"error": err.Error(),
+		})
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+cc_apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-cli-environment", "production")
+	req.Header.Set("x-command-code-version", version.GetCommandCodeVersion())
+	req.Header.Set("x-project-slug", c.projectSlugForSession(sessionID))
+	req.Header.Set("x-session-id", sessionID)
+	req.Header.Set("x-co-flag", "false")
+	req.Header.Set("x-taste-learning", "false")
+	req.Header.Set("traceparent", generateTraceparent())
+	req.Header.Set("User-Agent", "CommandCode/"+version.GetCommandCodeVersion())
+
+	if fp != nil {
+		req.Header.Set("x-thumbmark", fp.Thumbmark)
+		req.Header.Set("x-machine-id-hash", fp.Components.MachineIdHash)
+		req.Header.Set("x-os-user-hash", fp.Components.OsUserHash)
+		req.Header.Set("x-hostname-hash", fp.Components.HostnameHash)
+		req.Header.Set("x-git-email-hash", fp.Components.GitEmailHash)
+		req.Header.Set("x-platform", fp.Components.Platform)
+		req.Header.Set("x-arch", fp.Components.Arch)
+		req.Header.Set("x-os-release", fp.Components.OsRelease)
+		req.Header.Set("x-cpu-model", fp.Components.CpuModel)
+		req.Header.Set("x-cpu-count", fmt.Sprintf("%d", fp.Components.CpuCount))
+		req.Header.Set("x-mem-gib", fmt.Sprintf("%d", fp.Components.MemGiB))
+		req.Header.Set("x-timezone", fp.Components.Timezone)
+		req.Header.Set("x-runtime", fp.Components.Runtime)
+		req.Header.Set("x-collector-version", fmt.Sprintf("%d", fp.Components.CollectorVersion))
+	}
+
+	for key, values := range headers {
+		if isForwardBlockedHeader(key) {
+			continue
+		}
+		for _, value := range values {
+			req.Header.Add(key, value)
+		}
+	}
+
+	c.logger.Debug("Forwarding token count request to upstream", map[string]any{
+		"session_id": sessionID,
+	})
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		c.logger.Error("Upstream token count request failed", map[string]any{
+			"error": err.Error(),
+		})
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+
+	c.logger.Debug("Upstream token count response received", map[string]any{
+		"status": resp.StatusCode,
+	})
+
+	return resp, nil
+}
+
 // ProjectSlug returns the configured project slug or a session-derived fallback.
 func ProjectSlug(configuredSlug string, sessionID string) string {
 	if strings.TrimSpace(configuredSlug) != "" {

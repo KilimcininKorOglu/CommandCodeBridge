@@ -132,30 +132,105 @@ func openAIToolChoiceToCommandCode(toolChoice any) any {
 	return toolChoice
 }
 
-// anthropicToolChoiceToOpenAI maps Anthropic tool choice values to OpenAI format.
-func anthropicToolChoiceToOpenAI(toolChoice any) any {
+// anthropicToolChoiceToCommandCode maps Anthropic tool choice values to CommandCode format.
+func anthropicToolChoiceToCommandCode(toolChoice any) any {
 	choice, ok := toolChoice.(map[string]any)
 	if !ok {
 		return toolChoice
 	}
 
 	switch choice["type"] {
-	case nil, "auto":
-		return "auto"
-	case "any":
-		return "required"
-	case "none":
-		return "none"
+	case nil, "auto", "any", "none":
+		return map[string]any{"type": choice["type"]}
 	case "tool":
-		return map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name": choice["name"],
-			},
-		}
+		return map[string]any{"type": "tool", "name": choice["name"]}
 	default:
 		return toolChoice
 	}
+}
+
+// AnthropicMessagesToCommandCode converts an Anthropic Messages request to CommandCode format.
+func AnthropicMessagesToCommandCode(req *AnthropicRequest) (*CommandCodeRequest, error) {
+	if req == nil {
+		return nil, errors.New("nil request")
+	}
+
+	ccMessages := make([]CommandCodeMessage, 0, len(req.Messages))
+	systemParts := []string{}
+	if system := anthropicSystemToString(req.System); system != "" {
+		systemParts = append(systemParts, system)
+	}
+
+	for _, msg := range req.Messages {
+		if msg.Role == "system" {
+			if system := anthropicSystemToString(msg.Content); system != "" {
+				systemParts = append(systemParts, system)
+			}
+			continue
+		}
+
+		ccMsg, err := anthropicMessageToCommandCode(msg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert message: %w", err)
+		}
+		if len(ccMsg.Content) == 0 {
+			continue
+		}
+		ccMessages = append(ccMessages, ccMsg)
+	}
+
+	ccTools := make([]CommandCodeTool, 0, len(req.Tools))
+	for _, tool := range req.Tools {
+		ccTools = append(ccTools, anthropicToolToCommandCode(tool))
+	}
+
+	reasoningEffort := ""
+	if req.Thinking != nil {
+		reasoningEffort = req.Thinking.Effort
+		if reasoningEffort == "" && req.Thinking.BudgetTokens > 0 {
+			reasoningEffort = fmt.Sprintf("high-%d", req.Thinking.BudgetTokens)
+		}
+	}
+
+	workingDir, _ := config.GetWorkingDir()
+	dateStr := config.GetDateStr()
+	env := config.GetEnvironment()
+	isGitRepo, currentBranch, mainBranch, gitStatus, recentCommits := config.GetGitInfo()
+
+	return &CommandCodeRequest{
+		Config: CommandCodeConfig{
+			WorkingDir:    workingDir,
+			Date:          dateStr,
+			Environment:   env,
+			Structure:     []string{},
+			IsGitRepo:     isGitRepo,
+			CurrentBranch: currentBranch,
+			MainBranch:    mainBranch,
+			GitStatus:     gitStatus,
+			RecentCommits: recentCommits,
+		},
+		Memory:         nil,
+		Taste:          nil,
+		Skills:         "",
+		PermissionMode: "standard",
+		Params: CommandCodeParams{
+			Model:             req.Model,
+			Messages:          ccMessages,
+			MaxTokens:         defaultMaxTokens(req.MaxTokens),
+			Stream:            true,
+			System:            strings.Join(systemParts, "\n\n"),
+			Temperature:       req.Temperature,
+			TopP:              req.TopP,
+			StopSequences:     req.StopSequences,
+			Metadata:          req.Metadata,
+			ReasoningEffort:   reasoningEffort,
+			Thinking:          req.Thinking,
+			ContextManagement: req.ContextManagement,
+			OutputConfig:      req.OutputConfig,
+			Tools:             ccTools,
+			ToolChoice:        anthropicToolChoiceToCommandCode(req.ToolChoice),
+		},
+	}, nil
 }
 
 // CommandCodeToOpenAI converts a CommandCode response to OpenAI format
@@ -182,107 +257,6 @@ func CommandCodeToOpenAI(ccResp *CommandCodeResponse) (*OpenAIResponse, error) {
 	}, nil
 }
 
-// AnthropicToOpenAI converts an Anthropic request to OpenAI format
-func AnthropicToOpenAI(req *AnthropicRequest) (*OpenAIRequest, error) {
-	if req == nil {
-		return nil, errors.New("nil request")
-	}
-
-	// Convert messages
-	openaiMessages := make([]OpenAIMessage, 0, len(req.Messages)+1)
-
-	// Add system message if present
-	if system := anthropicSystemToString(req.System); system != "" {
-		openaiMessages = append(openaiMessages, OpenAIMessage{
-			Role:    "system",
-			Content: system,
-		})
-	}
-
-	// Convert Anthropic messages to OpenAI format
-	for _, msg := range req.Messages {
-		openaiMsg, err := anthropicMessageToOpenAI(msg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to convert message: %w", err)
-		}
-		openaiMessages = append(openaiMessages, openaiMsg)
-	}
-
-	// Convert tools
-	openaiTools := make([]OpenAITool, 0, len(req.Tools))
-	for _, tool := range req.Tools {
-		openaiTool := anthropicToolToOpenAI(tool)
-		openaiTools = append(openaiTools, openaiTool)
-	}
-
-	// Map Anthropic thinking to upstream reasoning controls.
-	reasoningEffort := ""
-	if req.Thinking != nil {
-		reasoningEffort = req.Thinking.Effort
-		if reasoningEffort == "" && req.Thinking.BudgetTokens > 0 {
-			reasoningEffort = fmt.Sprintf("high-%d", req.Thinking.BudgetTokens)
-		}
-	}
-
-	return &OpenAIRequest{
-		Model:             req.Model,
-		Messages:          openaiMessages,
-		MaxTokens:         req.MaxTokens,
-		Stream:            req.Stream,
-		Temperature:       req.Temperature,
-		TopP:              req.TopP,
-		StopSequences:     req.StopSequences,
-		Metadata:          req.Metadata,
-		Tools:             openaiTools,
-		ToolChoice:        anthropicToolChoiceToOpenAI(req.ToolChoice),
-		ReasoningEffort:   reasoningEffort,
-		Thinking:          req.Thinking,
-		ContextManagement: req.ContextManagement,
-		OutputConfig:      req.OutputConfig,
-	}, nil
-}
-
-// OpenAIToAnthropic converts an OpenAI response to Anthropic format
-func OpenAIToAnthropic(openaiResp *OpenAIResponse) (*AnthropicResponse, error) {
-	if openaiResp == nil {
-		return nil, errors.New("nil response")
-	}
-
-	if len(openaiResp.Choices) == 0 {
-		return nil, errors.New("no choices in response")
-	}
-
-	choice := openaiResp.Choices[0]
-	if choice.Message == nil {
-		return nil, errors.New("missing message in response choice")
-	}
-
-	content := []AnthropicContent{}
-	if choice.Message.ReasoningContent != "" {
-		content = append(content, AnthropicContent{Type: "thinking", Thinking: choice.Message.ReasoningContent})
-	}
-	if text, ok := choice.Message.Content.(string); ok && text != "" {
-		content = append(content, AnthropicContent{Type: "text", Text: text})
-	}
-	content = append(content, toolCallsToAnthropicContent(choice.Message.ToolCalls)...)
-
-	usage := &AnthropicUsage{}
-	if openaiResp.Usage != nil {
-		usage.InputTokens = openaiResp.Usage.InputTokens
-		usage.OutputTokens = openaiResp.Usage.OutputTokens
-	}
-
-	return &AnthropicResponse{
-		ID:         openaiResp.ID,
-		Type:       "message",
-		Role:       "assistant",
-		Content:    content,
-		Model:      openaiResp.Model,
-		StopReason: MapFinishReason(choice.FinishReason),
-		Usage:      usage,
-	}, nil
-}
-
 func toolCallsToAnthropicContent(toolCalls []ToolCall) []AnthropicContent {
 	content := make([]AnthropicContent, 0, len(toolCalls))
 	for _, tc := range toolCalls {
@@ -298,6 +272,25 @@ func toolCallsToAnthropicContent(toolCalls []ToolCall) []AnthropicContent {
 		})
 	}
 	return content
+}
+
+// CommandCodeToAnthropicMessages builds an Anthropic Messages response from CommandCode output.
+func CommandCodeToAnthropicMessages(messageID string, model string, content []AnthropicContent, finishReason string, usage *Usage) *AnthropicResponse {
+	anthropicUsage := &AnthropicUsage{}
+	if usage != nil {
+		anthropicUsage.InputTokens = usage.InputTokens
+		anthropicUsage.OutputTokens = usage.OutputTokens
+	}
+
+	return &AnthropicResponse{
+		ID:         messageID,
+		Type:       "message",
+		Role:       "assistant",
+		Content:    content,
+		Model:      model,
+		StopReason: MapFinishReason(finishReason),
+		Usage:      anthropicUsage,
+	}
 }
 
 // MapFinishReason maps OpenAI finish reason to Anthropic stop reason

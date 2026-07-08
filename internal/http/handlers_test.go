@@ -4,24 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	"github.com/kilimcininkoroglu/commandcode-bridge/internal/protocol"
 )
-
-func TestEstimateAnthropicInputTokensIncludesSystemMessagesAndTools(t *testing.T) {
-	req := &protocol.AnthropicRequest{
-		Model:  "model",
-		System: []any{map[string]any{"type": "text", "text": "system prompt"}},
-		Messages: []protocol.AnthropicMessage{
-			{Role: "user", Content: []any{map[string]any{"type": "text", "text": "hello"}}},
-		},
-		Tools: []protocol.AnthropicTool{{Name: "lookup", Description: "Lookup data"}},
-	}
-
-	if got := estimateAnthropicInputTokens(req); got <= 0 {
-		t.Fatalf("estimateAnthropicInputTokens() = %d, want positive count", got)
-	}
-}
 
 func TestCommandCodeStreamToOpenAIHandlesReasoningAndToolCalls(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{
@@ -43,6 +26,43 @@ func TestCommandCodeStreamToOpenAIHandlesReasoningAndToolCalls(t *testing.T) {
 	}
 	if message.ToolCalls[0].Function.Arguments != `{"q":"x"}` {
 		t.Fatalf("Arguments = %q, want JSON arguments", message.ToolCalls[0].Function.Arguments)
+	}
+}
+
+func TestCommandCodeStreamToAnthropicMessagesHandlesReasoningAndToolCalls(t *testing.T) {
+	stream := strings.NewReader(strings.Join([]string{
+		`{"type":"reasoning-delta","text":"thinking"}`,
+		`{"type":"tool-call","toolCallId":"call_1","toolName":"lookup","input":{"q":"x"}}`,
+		`{"type":"finish","finishReason":"tool_calls","totalUsage":{"inputTokens":3,"outputTokens":4}}`,
+	}, "\n"))
+
+	resp, err := commandCodeStreamToAnthropicMessagesWithIdleTimeout(stream, "model", "msg-test", nil, 0)
+	if err != nil {
+		t.Fatalf("commandCodeStreamToAnthropicMessagesWithIdleTimeout() error = %v", err)
+	}
+	if got, want := len(resp.Content), 2; got != want {
+		t.Fatalf("len(Content) = %d, want %d", got, want)
+	}
+	if got, want := resp.Content[0].Type, "thinking"; got != want {
+		t.Fatalf("Content[0].Type = %q, want %q", got, want)
+	}
+	if got, want := resp.Content[0].Thinking, "thinking"; got != want {
+		t.Fatalf("Content[0].Thinking = %q, want %q", got, want)
+	}
+	if got, want := resp.Content[1].Type, "tool_use"; got != want {
+		t.Fatalf("Content[1].Type = %q, want %q", got, want)
+	}
+	if got, want := resp.Content[1].ID, "call_1"; got != want {
+		t.Fatalf("Content[1].ID = %q, want %q", got, want)
+	}
+	if got, want := resp.Content[1].Name, "lookup"; got != want {
+		t.Fatalf("Content[1].Name = %q, want %q", got, want)
+	}
+	if got, want := resp.Content[1].Input["q"], any("x"); got != want {
+		t.Fatalf("Content[1].Input[q] = %v, want %v", got, want)
+	}
+	if got, want := resp.StopReason, "tool_use"; got != want {
+		t.Fatalf("StopReason = %q, want %q", got, want)
 	}
 }
 
