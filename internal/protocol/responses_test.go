@@ -23,6 +23,61 @@ func TestOpenAIResponsesToCommandCodeConvertsStringInput(t *testing.T) {
 	}
 }
 
+func TestOpenAIResponsesToCommandCodeConvertsTopLevelFunctionTool(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "model",
+		Input: "hello",
+		Tools: []OpenAITool{{
+			Type:        "function",
+			Name:        "Read",
+			Description: "Read a file",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{"type": "string"},
+				},
+			},
+		}},
+	}
+
+	ccReq, err := OpenAIResponsesToCommandCode(req)
+	if err != nil {
+		t.Fatalf("OpenAIResponsesToCommandCode() error = %v", err)
+	}
+	if got, want := ccReq.Params.Tools[0].Type, "function"; got != want {
+		t.Fatalf("Tool.Type = %q, want %q", got, want)
+	}
+	if got, want := ccReq.Params.Tools[0].Name, "Read"; got != want {
+		t.Fatalf("Tool.Name = %q, want %q", got, want)
+	}
+	if got, want := ccReq.Params.Tools[0].Description, "Read a file"; got != want {
+		t.Fatalf("Tool.Description = %q, want %q", got, want)
+	}
+	if ccReq.Params.Tools[0].InputSchema == nil {
+		t.Fatal("Tool.InputSchema = nil, want schema")
+	}
+}
+
+func TestOpenAIResponsesToCommandCodeSkipsUnsupportedCustomTools(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model: "model",
+		Input: "hello",
+		Tools: []OpenAITool{{
+			Type:        "custom",
+			Name:        "ApplyPatch",
+			Description: "Apply a patch",
+		}},
+	}
+
+	ccReq, err := OpenAIResponsesToCommandCode(req)
+	if err != nil {
+		t.Fatalf("OpenAIResponsesToCommandCode() error = %v", err)
+	}
+	if got := len(ccReq.Params.Tools); got != 0 {
+		t.Fatalf("len(Tools) = %d, want 0", got)
+	}
+}
+
 func TestOpenAIResponsesToCommandCodeConvertsFunctionCallOutput(t *testing.T) {
 	req := &OpenAIResponsesRequest{
 		Model: "model",

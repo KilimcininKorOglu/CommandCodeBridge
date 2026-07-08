@@ -38,6 +38,9 @@ func OpenAIToCommandCode(req *OpenAIRequest) (*CommandCodeRequest, error) {
 	ccTools := make([]CommandCodeTool, 0, len(req.Tools))
 	for _, tool := range req.Tools {
 		ccTool := openAIToolToCommandCode(tool)
+		if ccTool.Name == "" {
+			continue
+		}
 		ccTools = append(ccTools, ccTool)
 	}
 

@@ -31,8 +31,11 @@ type OpenAIMessage struct {
 
 // OpenAITool represents a tool definition in OpenAI format
 type OpenAITool struct {
-	Type     string             `json:"type"`
-	Function OpenAIToolFunction `json:"function"`
+	Type        string             `json:"type"`
+	Name        string             `json:"name,omitempty"`
+	Description string             `json:"description,omitempty"`
+	Parameters  map[string]any     `json:"parameters,omitempty"`
+	Function    OpenAIToolFunction `json:"function"`
 }
 
 // OpenAIToolFunction represents a function tool in OpenAI format

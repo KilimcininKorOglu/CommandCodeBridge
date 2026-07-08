@@ -90,7 +90,11 @@ func OpenAIResponsesToCommandCode(req *OpenAIResponsesRequest) (*CommandCodeRequ
 	messages := responsesInputToCommandCodeMessages(req.Input)
 	tools := make([]CommandCodeTool, 0, len(req.Tools))
 	for _, tool := range req.Tools {
-		tools = append(tools, openAIToolToCommandCode(tool))
+		ccTool := openAIToolToCommandCode(tool)
+		if ccTool.Name == "" {
+			continue
+		}
+		tools = append(tools, ccTool)
 	}
 
 	ccReq := baseCommandCodeRequest()

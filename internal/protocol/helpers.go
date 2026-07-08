@@ -397,11 +397,26 @@ func firstString(values map[string]any, keys ...string) string {
 
 // openAIToolToCommandCode converts an OpenAI tool to CommandCode format
 func openAIToolToCommandCode(tool OpenAITool) CommandCodeTool {
+	if tool.Type != "" && tool.Type != "function" {
+		return CommandCodeTool{}
+	}
+	name := tool.Function.Name
+	description := tool.Function.Description
+	parameters := tool.Function.Parameters
+	if name == "" {
+		name = tool.Name
+	}
+	if description == "" {
+		description = tool.Description
+	}
+	if parameters == nil {
+		parameters = tool.Parameters
+	}
 	return CommandCodeTool{
-		Type:        tool.Type,
-		Name:        tool.Function.Name,
-		Description: tool.Function.Description,
-		InputSchema: tool.Function.Parameters,
+		Type:        "function",
+		Name:        name,
+		Description: description,
+		InputSchema: parameters,
 	}
 }
 
