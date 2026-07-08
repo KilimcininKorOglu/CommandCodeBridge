@@ -115,6 +115,49 @@ func TestAnthropicTranslatorHandlesTextDelta(t *testing.T) {
 	}
 }
 
+func TestAnthropicTranslatorMapsStopReasonAndIgnoresDuplicateFinish(t *testing.T) {
+	translator := NewAnthropicTranslator("model", "msg-test")
+	reader := strings.NewReader(strings.Join([]string{
+		`{"type":"text-delta","text":"hello"}`,
+		`{"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":3,"outputTokens":4}}`,
+		`{"type":"finish-step","finishReason":"stop","usage":{"inputTokens":3,"outputTokens":4}}`,
+	}, "\n"))
+	var output bytes.Buffer
+
+	if err := translator.Translate(reader, &output); err != nil {
+		t.Fatalf("Translate() error = %v", err)
+	}
+	if got := strings.Count(output.String(), `"type":"message_stop"`); got != 1 {
+		t.Fatalf("message_stop count = %d, want 1", got)
+	}
+	if !strings.Contains(output.String(), `"stop_reason":"end_turn"`) {
+		t.Fatalf("output = %s, want end_turn stop reason", output.String())
+	}
+}
+
+func TestAnthropicTranslatorStreamsThinkingBlocks(t *testing.T) {
+	translator := NewAnthropicTranslator("model", "msg-test")
+	reader := strings.NewReader(strings.Join([]string{
+		`{"type":"reasoning-delta","text":"think"}`,
+		`{"type":"text-delta","text":"answer"}`,
+		`{"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":3,"outputTokens":4}}`,
+	}, "\n"))
+	var output bytes.Buffer
+
+	if err := translator.Translate(reader, &output); err != nil {
+		t.Fatalf("Translate() error = %v", err)
+	}
+	if !strings.Contains(output.String(), `"type":"thinking"`) {
+		t.Fatalf("output = %s, want thinking content block", output.String())
+	}
+	if !strings.Contains(output.String(), `"type":"thinking_delta"`) {
+		t.Fatalf("output = %s, want thinking delta", output.String())
+	}
+	if !strings.Contains(output.String(), `"type":"text"`) {
+		t.Fatalf("output = %s, want text content block after thinking", output.String())
+	}
+}
+
 func TestAnthropicTranslatorHandlesHyphenToolCall(t *testing.T) {
 	translator := NewAnthropicTranslator("model", "msg-test")
 	events, err := translator.ParseLine(`{"type":"tool-call","toolCallId":"toolu_1","toolName":"lookup","input":{"q":"x"}}`)

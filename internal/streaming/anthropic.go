@@ -26,6 +26,7 @@ type StreamContext struct {
 	nextBlockIndex    int
 	finishReason      string
 	hasError          bool
+	finished          bool
 }
 
 // NewAnthropicTranslator creates a new Anthropic streaming translator
@@ -107,7 +108,9 @@ func (t *AnthropicTranslator) ParseLine(line string) ([]SSEEvent, error) {
 		events, err = t.handleDelta(event)
 	case "text-delta":
 		events, err = t.handleTextDelta(event)
-	case "reasoning-delta", "reasoning-end", "provider-metadata", "tool-input-start", "tool-input-delta", "tool-input-end", "tool-error", "text-end":
+	case "reasoning-delta":
+		events, err = t.handleReasoningDelta(event)
+	case "reasoning-end", "provider-metadata", "tool-input-start", "tool-input-delta", "tool-input-end", "tool-error", "text-end":
 		return nil, nil
 	case "toolCall", "tool-call":
 		events, err = t.handleToolCall(event)
@@ -215,6 +218,57 @@ func (t *AnthropicTranslator) handleTextContentDelta(text string) ([]SSEEvent, e
 	return events, nil
 }
 
+// handleReasoningDelta processes thinking deltas.
+func (t *AnthropicTranslator) handleReasoningDelta(event CommandCodeEvent) ([]SSEEvent, error) {
+	text := TextDeltaContent(event)
+	if text == "" {
+		return nil, nil
+	}
+
+	events := []SSEEvent{}
+	close := t.closeTextBlock()
+	if close != "" {
+		events = append(events, SSEEvent{Event: "content_block_stop", Data: close})
+	}
+
+	if !t.ctx.blockStarted || t.ctx.currentBlockType != "thinking" {
+		t.ctx.currentBlockIndex = t.ctx.nextBlockIndex
+		t.ctx.nextBlockIndex++
+		t.ctx.currentBlockType = "thinking"
+		t.ctx.blockStarted = true
+
+		startEvent := map[string]any{
+			"type":  "content_block_start",
+			"index": t.ctx.currentBlockIndex,
+			"content_block": map[string]any{
+				"type":     "thinking",
+				"thinking": "",
+			},
+		}
+		data, err := json.Marshal(startEvent)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, SSEEvent{Event: "content_block_start", Data: string(data)})
+	}
+
+	deltaEvent := map[string]any{
+		"type":  "content_block_delta",
+		"index": t.ctx.currentBlockIndex,
+		"delta": map[string]any{
+			"type":     "thinking_delta",
+			"thinking": text,
+		},
+	}
+	data, err := json.Marshal(deltaEvent)
+	if err != nil {
+		return nil, err
+	}
+
+	events = append(events, SSEEvent{Event: "content_block_delta", Data: string(data)})
+	return events, nil
+}
+
 // handleToolCall processes tool call events.
 func (t *AnthropicTranslator) handleToolCall(event CommandCodeEvent) ([]SSEEvent, error) {
 	events := []SSEEvent{}
@@ -278,6 +332,10 @@ func (t *AnthropicTranslator) handleToolCall(event CommandCodeEvent) ([]SSEEvent
 
 // handleFinish processes finish events
 func (t *AnthropicTranslator) handleFinish(event CommandCodeEvent) ([]SSEEvent, error) {
+	if t.ctx.finished {
+		return nil, nil
+	}
+	t.ctx.finished = true
 	events := []SSEEvent{}
 
 	// Close current text block
@@ -298,7 +356,7 @@ func (t *AnthropicTranslator) handleFinish(event CommandCodeEvent) ([]SSEEvent, 
 	// Send message delta with stop reason
 	deltaEvent := map[string]any{
 		"type":  "message_delta",
-		"delta": map[string]any{"stop_reason": event.FinishReason, "stop_sequence": nil},
+		"delta": map[string]any{"stop_reason": mapAnthropicStreamStopReason(event.FinishReason), "stop_sequence": nil},
 		"usage": anthropicUsage,
 	}
 	data, err := json.Marshal(deltaEvent)
@@ -317,9 +375,24 @@ func (t *AnthropicTranslator) handleFinish(event CommandCodeEvent) ([]SSEEvent, 
 	return events, nil
 }
 
+func mapAnthropicStreamStopReason(reason string) string {
+	switch reason {
+	case "tool_calls", "tool-calls":
+		return "tool_use"
+	case "length":
+		return "max_tokens"
+	case "content_filter":
+		return "stop_sequence"
+	case "stop", "":
+		return "end_turn"
+	default:
+		return reason
+	}
+}
+
 // closeTextBlock closes the current text block if one is active
 func (t *AnthropicTranslator) closeTextBlock() string {
-	if t.ctx.blockStarted && t.ctx.currentBlockType == "text" {
+	if t.ctx.blockStarted && (t.ctx.currentBlockType == "text" || t.ctx.currentBlockType == "thinking") {
 		t.ctx.blockStarted = false
 		t.ctx.currentBlockType = ""
 		stopEvent := map[string]any{

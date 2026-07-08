@@ -65,18 +65,18 @@ func proxyTokenFromRequest(headers http.Header, proxyToken string) bool {
 		return true
 	}
 
-	provided := headers.Get("X-Proxy-Token")
-	if provided == "" {
-		auth := headers.Get("Authorization")
-		if strings.HasPrefix(auth, "Bearer ") {
-			provided = auth[7:]
+	candidates := []string{headers.Get("X-Proxy-Token")}
+	if auth := headers.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		candidates = append(candidates, auth[7:])
+	}
+	candidates = append(candidates, headers.Get("x-api-key"))
+
+	for _, provided := range candidates {
+		if subtle.ConstantTimeCompare([]byte(provided), []byte(proxyToken)) == 1 {
+			return true
 		}
 	}
-	if provided == "" {
-		provided = headers.Get("x-api-key")
-	}
-
-	return subtle.ConstantTimeCompare([]byte(provided), []byte(proxyToken)) == 1
+	return false
 }
 
 // ccAPIKeyFromRequest extracts the first CommandCode API key from a Bearer header or config fallback.

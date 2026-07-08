@@ -302,6 +302,26 @@ func openAIToolToCommandCode(tool OpenAITool) CommandCodeTool {
 	}
 }
 
+func anthropicSystemToString(system any) string {
+	switch v := system.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case []any:
+		var parts []string
+		for _, item := range v {
+			text := contentPartToString(item)
+			if text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n\n")
+	default:
+		return contentPartToString(v)
+	}
+}
+
 // anthropicMessageToOpenAI converts an Anthropic message to OpenAI format
 func anthropicMessageToOpenAI(msg AnthropicMessage) (OpenAIMessage, error) {
 	openaiMsg := OpenAIMessage{

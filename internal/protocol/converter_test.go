@@ -70,7 +70,7 @@ func TestOpenAIToCommandCodeMovesSystemMessagesOutOfMessageList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenAIToCommandCode() error = %v", err)
 	}
-	if got, want := ccReq.Params.System, "second"; got != want {
+	if got, want := ccReq.Params.System, "first\n\nsecond"; got != want {
 		t.Fatalf("System = %q, want %q", got, want)
 	}
 	if got, want := len(ccReq.Params.Messages), 1; got != want {
@@ -145,6 +145,90 @@ func TestOpenAIToCommandCodeConvertsAssistantToolCallsAndToolResponses(t *testin
 	}
 }
 
+func TestAnthropicToOpenAIConvertsSystemArrayAndMidConversationSystem(t *testing.T) {
+	req := &AnthropicRequest{
+		Model: "model",
+		System: []any{
+			map[string]any{"type": "text", "text": "first"},
+			map[string]any{"type": "text", "text": "second"},
+		},
+		Messages: []AnthropicMessage{
+			{Role: "user", Content: "hello"},
+			{Role: "system", Content: "mid"},
+		},
+	}
+
+	openAIReq, err := AnthropicToOpenAI(req)
+	if err != nil {
+		t.Fatalf("AnthropicToOpenAI() error = %v", err)
+	}
+	ccReq, err := OpenAIToCommandCode(openAIReq)
+	if err != nil {
+		t.Fatalf("OpenAIToCommandCode() error = %v", err)
+	}
+	if got, want := ccReq.Params.System, "first\n\nsecond\n\nmid"; got != want {
+		t.Fatalf("System = %q, want %q", got, want)
+	}
+	if got, want := len(ccReq.Params.Messages), 1; got != want {
+		t.Fatalf("len(Messages) = %d, want %d", got, want)
+	}
+	if got, want := ccReq.Params.Messages[0].Role, "user"; got != want {
+		t.Fatalf("Messages[0].Role = %q, want %q", got, want)
+	}
+}
+
+func TestAnthropicToOpenAIPreservesClaudeCodeRequestFields(t *testing.T) {
+	req := &AnthropicRequest{
+		Model:         "model",
+		MaxTokens:     10,
+		TopP:          0.7,
+		StopSequences: []string{"stop-here"},
+		Metadata:      &AnthropicMetadata{UserID: "user-id"},
+		Thinking:      &AnthropicThinking{Type: "enabled", Effort: "high"},
+		ContextManagement: map[string]any{
+			"edits": true,
+		},
+		OutputConfig: map[string]any{
+			"format": map[string]any{"type": "json_object"},
+		},
+		Messages: []AnthropicMessage{{Role: "user", Content: "hello"}},
+	}
+
+	openAIReq, err := AnthropicToOpenAI(req)
+	if err != nil {
+		t.Fatalf("AnthropicToOpenAI() error = %v", err)
+	}
+	ccReq, err := OpenAIToCommandCode(openAIReq)
+	if err != nil {
+		t.Fatalf("OpenAIToCommandCode() error = %v", err)
+	}
+	if got, want := ccReq.Params.TopP, 0.7; got != want {
+		t.Fatalf("TopP = %v, want %v", got, want)
+	}
+	if got, want := ccReq.Params.StopSequences[0], "stop-here"; got != want {
+		t.Fatalf("StopSequences[0] = %q, want %q", got, want)
+	}
+	metadata, ok := ccReq.Params.Metadata.(*AnthropicMetadata)
+	if !ok {
+		t.Fatalf("Metadata = %T, want *AnthropicMetadata", ccReq.Params.Metadata)
+	}
+	if got, want := metadata.UserID, "user-id"; got != want {
+		t.Fatalf("Metadata.UserID = %q, want %q", got, want)
+	}
+	if got, want := ccReq.Params.ReasoningEffort, "high"; got != want {
+		t.Fatalf("ReasoningEffort = %q, want %q", got, want)
+	}
+	if ccReq.Params.Thinking == nil {
+		t.Fatal("Thinking = nil, want preserved thinking config")
+	}
+	if ccReq.Params.ContextManagement == nil {
+		t.Fatal("ContextManagement = nil, want preserved context management")
+	}
+	if ccReq.Params.OutputConfig == nil {
+		t.Fatal("OutputConfig = nil, want preserved output config")
+	}
+}
+
 func TestAnthropicToOpenAIMapsToolChoiceAnyToRequired(t *testing.T) {
 	req := &AnthropicRequest{
 		Model:     "model",
@@ -191,6 +275,34 @@ func TestAnthropicToOpenAIMapsToolChoiceToolToFunction(t *testing.T) {
 	}
 	if got, want := function["name"], "lookup"; got != want {
 		t.Fatalf("ToolChoice.function.name = %v, want %v", got, want)
+	}
+}
+
+func TestOpenAIToAnthropicConvertsReasoningContentToThinkingBlock(t *testing.T) {
+	resp := &OpenAIResponse{
+		ID:    "chatcmpl-test",
+		Model: "model",
+		Choices: []OpenAIChoice{
+			{
+				Message:      &OpenAIMessage{Role: "assistant", Content: "answer", ReasoningContent: "thinking"},
+				FinishReason: "stop",
+			},
+		},
+		Usage: &Usage{InputTokens: 3, OutputTokens: 4},
+	}
+
+	anthropicResp, err := OpenAIToAnthropic(resp)
+	if err != nil {
+		t.Fatalf("OpenAIToAnthropic() error = %v", err)
+	}
+	if got, want := len(anthropicResp.Content), 2; got != want {
+		t.Fatalf("len(Content) = %d, want %d", got, want)
+	}
+	if got, want := anthropicResp.Content[0].Type, "thinking"; got != want {
+		t.Fatalf("Content[0].Type = %q, want %q", got, want)
+	}
+	if got, want := anthropicResp.Content[0].Thinking, "thinking"; got != want {
+		t.Fatalf("Content[0].Thinking = %q, want %q", got, want)
 	}
 }
 

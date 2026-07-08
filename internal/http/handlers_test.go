@@ -4,7 +4,24 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/kilimcininkoroglu/commandcode-bridge/internal/protocol"
 )
+
+func TestEstimateAnthropicInputTokensIncludesSystemMessagesAndTools(t *testing.T) {
+	req := &protocol.AnthropicRequest{
+		Model:  "model",
+		System: []any{map[string]any{"type": "text", "text": "system prompt"}},
+		Messages: []protocol.AnthropicMessage{
+			{Role: "user", Content: []any{map[string]any{"type": "text", "text": "hello"}}},
+		},
+		Tools: []protocol.AnthropicTool{{Name: "lookup", Description: "Lookup data"}},
+	}
+
+	if got := estimateAnthropicInputTokens(req); got <= 0 {
+		t.Fatalf("estimateAnthropicInputTokens() = %d, want positive count", got)
+	}
+}
 
 func TestCommandCodeStreamToOpenAIHandlesReasoningAndToolCalls(t *testing.T) {
 	stream := strings.NewReader(strings.Join([]string{

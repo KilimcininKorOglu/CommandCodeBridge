@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/kilimcininkoroglu/commandcode-bridge/internal/config"
 )
@@ -41,14 +42,15 @@ func OpenAIToCommandCode(req *OpenAIRequest) (*CommandCodeRequest, error) {
 	}
 
 	// Build system message from OpenAI messages if present
-	system := ""
+	systemParts := []string{}
 	for _, msg := range req.Messages {
 		if msg.Role == "system" {
-			if str, ok := msg.Content.(string); ok {
-				system = str
+			if str, ok := msg.Content.(string); ok && str != "" {
+				systemParts = append(systemParts, str)
 			}
 		}
 	}
+	system := strings.Join(systemParts, "\n\n")
 
 	// Get environment info
 	workingDir, _ := config.GetWorkingDir()
@@ -79,7 +81,13 @@ func OpenAIToCommandCode(req *OpenAIRequest) (*CommandCodeRequest, error) {
 			Stream:            true,
 			System:            system,
 			Temperature:       req.Temperature,
+			TopP:              req.TopP,
+			StopSequences:     req.StopSequences,
+			Metadata:          req.Metadata,
 			ReasoningEffort:   req.ReasoningEffort,
+			Thinking:          req.Thinking,
+			ContextManagement: req.ContextManagement,
+			OutputConfig:      req.OutputConfig,
 			Tools:             ccTools,
 			ToolChoice:        openAIToolChoiceToCommandCode(req.ToolChoice),
 			ParallelToolCalls: req.ParallelToolCalls,
@@ -184,13 +192,11 @@ func AnthropicToOpenAI(req *AnthropicRequest) (*OpenAIRequest, error) {
 	openaiMessages := make([]OpenAIMessage, 0, len(req.Messages)+1)
 
 	// Add system message if present
-	if req.System != nil {
-		if str, ok := req.System.(string); ok && str != "" {
-			openaiMessages = append(openaiMessages, OpenAIMessage{
-				Role:    "system",
-				Content: str,
-			})
-		}
+	if system := anthropicSystemToString(req.System); system != "" {
+		openaiMessages = append(openaiMessages, OpenAIMessage{
+			Role:    "system",
+			Content: system,
+		})
 	}
 
 	// Convert Anthropic messages to OpenAI format
@@ -209,21 +215,30 @@ func AnthropicToOpenAI(req *AnthropicRequest) (*OpenAIRequest, error) {
 		openaiTools = append(openaiTools, openaiTool)
 	}
 
-	// Map thinking budget_tokens to reasoning_effort
+	// Map Anthropic thinking to upstream reasoning controls.
 	reasoningEffort := ""
-	if req.Thinking != nil && req.Thinking.BudgetTokens > 0 {
-		reasoningEffort = fmt.Sprintf("high-%d", req.Thinking.BudgetTokens)
+	if req.Thinking != nil {
+		reasoningEffort = req.Thinking.Effort
+		if reasoningEffort == "" && req.Thinking.BudgetTokens > 0 {
+			reasoningEffort = fmt.Sprintf("high-%d", req.Thinking.BudgetTokens)
+		}
 	}
 
 	return &OpenAIRequest{
-		Model:           req.Model,
-		Messages:        openaiMessages,
-		MaxTokens:       req.MaxTokens,
-		Stream:          req.Stream,
-		Temperature:     req.Temperature,
-		Tools:           openaiTools,
-		ToolChoice:      anthropicToolChoiceToOpenAI(req.ToolChoice),
-		ReasoningEffort: reasoningEffort,
+		Model:             req.Model,
+		Messages:          openaiMessages,
+		MaxTokens:         req.MaxTokens,
+		Stream:            req.Stream,
+		Temperature:       req.Temperature,
+		TopP:              req.TopP,
+		StopSequences:     req.StopSequences,
+		Metadata:          req.Metadata,
+		Tools:             openaiTools,
+		ToolChoice:        anthropicToolChoiceToOpenAI(req.ToolChoice),
+		ReasoningEffort:   reasoningEffort,
+		Thinking:          req.Thinking,
+		ContextManagement: req.ContextManagement,
+		OutputConfig:      req.OutputConfig,
 	}, nil
 }
 
@@ -243,6 +258,9 @@ func OpenAIToAnthropic(openaiResp *OpenAIResponse) (*AnthropicResponse, error) {
 	}
 
 	content := []AnthropicContent{}
+	if choice.Message.ReasoningContent != "" {
+		content = append(content, AnthropicContent{Type: "thinking", Thinking: choice.Message.ReasoningContent})
+	}
 	if text, ok := choice.Message.Content.(string); ok && text != "" {
 		content = append(content, AnthropicContent{Type: "text", Text: text})
 	}

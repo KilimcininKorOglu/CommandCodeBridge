@@ -6,9 +6,15 @@ type OpenAIRequest struct {
 	Messages          []OpenAIMessage `json:"messages"`
 	MaxTokens         int             `json:"max_tokens,omitempty"`
 	Temperature       float64         `json:"temperature,omitempty"`
+	TopP              float64         `json:"top_p,omitempty"`
+	StopSequences     []string        `json:"stop,omitempty"`
+	Metadata          any             `json:"metadata,omitempty"`
 	Tools             []OpenAITool    `json:"tools,omitempty"`
 	Stream            bool            `json:"stream,omitempty"`
 	ReasoningEffort   string          `json:"reasoning_effort,omitempty"`
+	Thinking          any             `json:"thinking,omitempty"`
+	ContextManagement any             `json:"context_management,omitempty"`
+	OutputConfig      any             `json:"output_config,omitempty"`
 	ToolChoice        any             `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool           `json:"parallel_tool_calls,omitempty"`
 }
@@ -79,18 +85,20 @@ type OpenAIChunk struct {
 
 // AnthropicRequest represents an Anthropic API request
 type AnthropicRequest struct {
-	Model         string             `json:"model"`
-	Messages      []AnthropicMessage `json:"messages"`
-	MaxTokens     int                `json:"max_tokens"`
-	Stream        bool               `json:"stream,omitempty"`
-	System        any                `json:"system,omitempty"`
-	Tools         []AnthropicTool    `json:"tools,omitempty"`
-	ToolChoice    any                `json:"tool_choice,omitempty"`
-	Temperature   float64            `json:"temperature,omitempty"`
-	TopP          float64            `json:"top_p,omitempty"`
-	StopSequences []string           `json:"stop_sequences,omitempty"`
-	Metadata      *AnthropicMetadata `json:"metadata,omitempty"`
-	Thinking      *AnthropicThinking `json:"thinking,omitempty"`
+	Model             string             `json:"model"`
+	Messages          []AnthropicMessage `json:"messages"`
+	MaxTokens         int                `json:"max_tokens"`
+	Stream            bool               `json:"stream,omitempty"`
+	System            any                `json:"system,omitempty"`
+	Tools             []AnthropicTool    `json:"tools,omitempty"`
+	ToolChoice        any                `json:"tool_choice,omitempty"`
+	Temperature       float64            `json:"temperature,omitempty"`
+	TopP              float64            `json:"top_p,omitempty"`
+	StopSequences     []string           `json:"stop_sequences,omitempty"`
+	Metadata          *AnthropicMetadata `json:"metadata,omitempty"`
+	Thinking          *AnthropicThinking `json:"thinking,omitempty"`
+	ContextManagement any                `json:"context_management,omitempty"`
+	OutputConfig      any                `json:"output_config,omitempty"`
 }
 
 // AnthropicMessage represents a message in Anthropic format
@@ -132,11 +140,13 @@ type AnthropicResponse struct {
 
 // AnthropicContent represents content in Anthropic format
 type AnthropicContent struct {
-	Type  string         `json:"type"`
-	Text  string         `json:"text,omitempty"`
-	ID    string         `json:"id,omitempty"`
-	Name  string         `json:"name,omitempty"`
-	Input map[string]any `json:"input,omitempty"`
+	Type      string         `json:"type"`
+	Text      string         `json:"text,omitempty"`
+	Thinking  string         `json:"thinking,omitempty"`
+	Signature string         `json:"signature,omitempty"`
+	ID        string         `json:"id,omitempty"`
+	Name      string         `json:"name,omitempty"`
+	Input     map[string]any `json:"input,omitempty"`
 }
 
 // AnthropicUsage represents usage in Anthropic format
@@ -178,7 +188,13 @@ type CommandCodeParams struct {
 	Stream            bool                 `json:"stream"`
 	System            string               `json:"system,omitempty"`
 	Temperature       float64              `json:"temperature,omitempty"`
+	TopP              float64              `json:"top_p,omitempty"`
+	StopSequences     []string             `json:"stop_sequences,omitempty"`
+	Metadata          any                  `json:"metadata,omitempty"`
 	ReasoningEffort   string               `json:"reasoning_effort,omitempty"`
+	Thinking          any                  `json:"thinking,omitempty"`
+	ContextManagement any                  `json:"context_management,omitempty"`
+	OutputConfig      any                  `json:"output_config,omitempty"`
 	Tools             []CommandCodeTool    `json:"tools,omitempty"`
 	ToolChoice        any                  `json:"tool_choice,omitempty"`
 	ParallelToolCalls *bool                `json:"parallel_tool_calls,omitempty"`

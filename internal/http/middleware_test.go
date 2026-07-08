@@ -85,6 +85,16 @@ func TestProxyTokenFromRequestAcceptsXAPIKeyHeader(t *testing.T) {
 	}
 }
 
+func TestProxyTokenFromRequestAcceptsXAPIKeyWhenAuthorizationHasCommandCodeKey(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer user_upstream_key")
+	headers.Set("x-api-key", "my-proxy-token")
+
+	if !proxyTokenFromRequest(headers, "my-proxy-token") {
+		t.Fatal("expected x-api-key proxy token to be accepted when Authorization contains upstream key")
+	}
+}
+
 func TestProxyTokenFromRequestRejectsWrongXAPIKey(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("x-api-key", "wrong-token")

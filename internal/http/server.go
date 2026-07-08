@@ -47,6 +47,7 @@ func (s *Server) Start() error {
 		r.Use(AuthMiddleware(s.config, s.logger))
 		r.Post("/v1/chat/completions", HandleChatCompletions(s.deps))
 		r.Post("/v1/messages", HandleMessages(s.deps))
+		r.Post("/v1/messages/count_tokens", HandleMessagesCountTokens(s.deps))
 		r.Get("/v1/models", HandleModels(s.deps))
 	})
 

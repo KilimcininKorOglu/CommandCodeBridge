@@ -312,6 +312,68 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 	}
 }
 
+// HandleMessagesCountTokens handles Anthropic token counting requests.
+func HandleMessagesCountTokens(deps *HandlerDependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.AnthropicRequest
+		if apiErr := decodeRequestBody(r.Body, &req); apiErr != nil {
+			deps.Logger.Warn("Failed to parse Anthropic token count request body", map[string]any{
+				"error": apiErr.Message,
+			})
+			sendError(w, apiErr)
+			return
+		}
+
+		inputTokens := estimateAnthropicInputTokens(&req)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]int{"input_tokens": inputTokens})
+	}
+}
+
+func estimateAnthropicInputTokens(req *protocol.AnthropicRequest) int {
+	if req == nil {
+		return 0
+	}
+	bytesCount := len(req.Model) + len(req.Tools)*256
+	bytesCount += len(anthropicValueText(req.System))
+	for _, msg := range req.Messages {
+		bytesCount += len(msg.Role) + len(anthropicValueText(msg.Content))
+	}
+	if bytesCount == 0 {
+		return 0
+	}
+	return (bytesCount + 3) / 4
+}
+
+func anthropicValueText(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case []any:
+		var b strings.Builder
+		for _, item := range v {
+			b.WriteString(anthropicValueText(item))
+		}
+		return b.String()
+	case map[string]any:
+		var b strings.Builder
+		for _, key := range []string{"text", "content", "name", "description"} {
+			if text, ok := v[key].(string); ok {
+				b.WriteString(text)
+			}
+		}
+		return b.String()
+	default:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return ""
+		}
+		return string(data)
+	}
+}
+
 // HandleModels handles the models endpoint
 func HandleModels(deps *HandlerDependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
