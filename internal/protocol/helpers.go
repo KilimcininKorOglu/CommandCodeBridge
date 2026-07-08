@@ -373,8 +373,20 @@ func anthropicMessageToCommandCode(msg AnthropicMessage, toolNameByID map[string
 			ccMsg.Content = append(ccMsg.Content, CommandCodeContent{Type: "text", Text: text})
 		}
 	}
+	if commandCodeContentHasType(ccMsg.Content, "tool-result") {
+		ccMsg.Role = "tool"
+	}
 
 	return ccMsg, nil
+}
+
+func commandCodeContentHasType(content []CommandCodeContent, contentType string) bool {
+	for _, item := range content {
+		if item.Type == contentType {
+			return true
+		}
+	}
+	return false
 }
 
 func anthropicContentPartToCommandCode(itemMap map[string]any, toolNameByID map[string]string) []CommandCodeContent {

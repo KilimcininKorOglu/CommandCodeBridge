@@ -206,6 +206,9 @@ func TestAnthropicMessagesToCommandCodePreservesToolResultName(t *testing.T) {
 		t.Fatalf("AnthropicMessagesToCommandCode() error = %v", err)
 	}
 	toolResult := ccReq.Params.Messages[1].Content[0]
+	if got, want := ccReq.Params.Messages[1].Role, "tool"; got != want {
+		t.Fatalf("ToolResult.Role = %q, want %q", got, want)
+	}
 	if got, want := toolResult.Type, "tool-result"; got != want {
 		t.Fatalf("ToolResult.Type = %q, want %q", got, want)
 	}
