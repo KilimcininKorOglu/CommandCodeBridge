@@ -41,10 +41,7 @@ func AuthMiddleware(cfg *config.Config, logger *logging.Logger) func(http.Handle
 				return
 			}
 
-			ccAPIKey, ok := ccAPIKeyFromRequest(r.Header, cfg.CCAPIKey)
-			if cfg.ProxyToken != "" {
-				ccAPIKey, ok = extractCCAPIKey(cfg.CCAPIKey)
-			}
+			ccAPIKey, ok := ccAPIKeyFromConfig(cfg.CCAPIKey)
 			if !ok {
 				logger.Warn("Invalid or missing API key", nil)
 				sendError(w, error.NewAPIError(error.ErrorTypeAuth, "Missing or invalid API key").WithCode(http.StatusUnauthorized))
@@ -79,14 +76,8 @@ func proxyTokenFromRequest(headers http.Header, proxyToken string) bool {
 	return false
 }
 
-// ccAPIKeyFromRequest extracts the first CommandCode API key from a Bearer header or config fallback.
-func ccAPIKeyFromRequest(headers http.Header, configCCAPIKey string) (string, bool) {
-	if auth := headers.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		if ccAPIKey, ok := extractCCAPIKey(auth[7:]); ok {
-			return ccAPIKey, true
-		}
-	}
-
+// ccAPIKeyFromConfig extracts the CommandCode API key from config.
+func ccAPIKeyFromConfig(configCCAPIKey string) (string, bool) {
 	if configCCAPIKey == "" {
 		return "", false
 	}
