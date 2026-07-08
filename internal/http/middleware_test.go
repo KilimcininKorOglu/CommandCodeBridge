@@ -32,12 +32,16 @@ func TestAPIKeyFromRequestUsesConfigFallbackWithoutHeader(t *testing.T) {
 	}
 }
 
-func TestAPIKeyFromRequestRejectsInvalidBearerEvenWithConfigFallback(t *testing.T) {
+func TestAPIKeyFromRequestUsesConfigFallbackForInvalidBearer(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer sk-invalid")
 
-	if apiKey, ok := ccAPIKeyFromRequest(headers, "user_config_key"); ok {
-		t.Fatalf("ccAPIKeyFromRequest() accepted %q, want rejection", apiKey)
+	apiKey, ok := ccAPIKeyFromRequest(headers, "user_config_key")
+	if !ok {
+		t.Fatal("expected API key to be extracted from config fallback")
+	}
+	if got, want := apiKey, "user_config_key"; got != want {
+		t.Fatalf("apiKey = %q, want %q", got, want)
 	}
 }
 
@@ -67,12 +71,25 @@ func TestProxyTokenFromRequestRejectsMissingToken(t *testing.T) {
 	}
 }
 
-func TestAPIKeyFromRequestRejectsProxyTokenAsCommandCodeKey(t *testing.T) {
+func TestAPIKeyFromRequestUsesConfigFallbackForProxyTokenBearer(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer test")
 
-	if apiKey, ok := ccAPIKeyFromRequest(headers, "user_config_key"); ok {
-		t.Fatalf("ccAPIKeyFromRequest() accepted proxy token %q, want rejection", apiKey)
+	apiKey, ok := ccAPIKeyFromRequest(headers, "user_config_key")
+	if !ok {
+		t.Fatal("expected API key to be extracted from config fallback")
+	}
+	if got, want := apiKey, "user_config_key"; got != want {
+		t.Fatalf("apiKey = %q, want %q", got, want)
+	}
+}
+
+func TestAPIKeyFromRequestRejectsInvalidBearerWithoutConfigFallback(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer test")
+
+	if apiKey, ok := ccAPIKeyFromRequest(headers, ""); ok {
+		t.Fatalf("ccAPIKeyFromRequest() accepted %q, want rejection", apiKey)
 	}
 }
 

@@ -81,19 +81,16 @@ func proxyTokenFromRequest(headers http.Header, proxyToken string) bool {
 
 // ccAPIKeyFromRequest extracts the first CommandCode API key from a Bearer header or config fallback.
 func ccAPIKeyFromRequest(headers http.Header, configCCAPIKey string) (string, bool) {
-	auth := headers.Get("Authorization")
-	if auth == "" {
-		if configCCAPIKey == "" {
-			return "", false
+	if auth := headers.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		if ccAPIKey, ok := extractCCAPIKey(auth[7:]); ok {
+			return ccAPIKey, true
 		}
-		return extractCCAPIKey(configCCAPIKey)
 	}
 
-	if !strings.HasPrefix(auth, "Bearer ") {
+	if configCCAPIKey == "" {
 		return "", false
 	}
-
-	return extractCCAPIKey(auth[7:])
+	return extractCCAPIKey(configCCAPIKey)
 }
 
 // extractCCAPIKey returns the first user_ key from a credential string.
