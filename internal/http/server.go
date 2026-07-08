@@ -47,6 +47,8 @@ func (s *Server) Start() error {
 	r.Group(func(r chi.Router) {
 		r.Use(AuthMiddleware(s.config, s.logger))
 		r.Post("/v1/chat/completions", HandleChatCompletions(s.deps))
+		r.Post("/v1/responses", HandleResponses(s.deps))
+		r.Post("/v1/responses/compact", HandleResponsesCompact(s.deps))
 		r.Post("/v1/messages", HandleMessages(s.deps))
 		r.Post("/v1/messages/count_tokens", HandleMessagesCountTokens(s.deps))
 	})

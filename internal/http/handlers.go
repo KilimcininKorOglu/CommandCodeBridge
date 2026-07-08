@@ -172,6 +172,138 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 	}
 }
 
+// HandleResponses handles OpenAI Responses endpoint.
+func HandleResponses(deps *HandlerDependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ccAPIKey := r.Context().Value("ccAPIKey").(string)
+		if err := deps.InitManager.EnsureInitialized(r.Context(), ccAPIKey, deps.Config.Fingerprint); err != nil {
+			deps.Logger.Warn("Initialization failed", map[string]any{"error": err.Error()})
+		}
+
+		var req protocol.OpenAIResponsesRequest
+		if apiErr := decodeRequestBody(r.Body, &req); apiErr != nil {
+			deps.Logger.Warn("Failed to parse OpenAI Responses request body", map[string]any{"error": apiErr.Message})
+			sendError(w, apiErr)
+			return
+		}
+
+		deps.Logger.Debug("OpenAI Responses request received", map[string]any{
+			"model":               req.Model,
+			"stream":              req.Stream,
+			"max_output_tokens":   req.MaxOutputTokens,
+			"tools":               len(req.Tools),
+			"reasoning_effort":    req.ReasoningEffort,
+			"thinking_enabled":    req.Thinking != nil,
+			"parallel_tool_calls": req.ParallelToolCalls,
+		})
+
+		ccReq, err := protocol.OpenAIResponsesToCommandCode(&req)
+		if err != nil {
+			deps.Logger.Error("Failed to convert OpenAI Responses request to CommandCode", map[string]any{"error": err.Error()})
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to convert request").WithCode(http.StatusInternalServerError))
+			return
+		}
+		handleCommandCodeResponsesRequest(w, r, deps, ccAPIKey, req.Model, req.Stream, ccReq, false)
+	}
+}
+
+// HandleResponsesCompact handles OpenAI Responses compaction endpoint.
+func HandleResponsesCompact(deps *HandlerDependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ccAPIKey := r.Context().Value("ccAPIKey").(string)
+		if err := deps.InitManager.EnsureInitialized(r.Context(), ccAPIKey, deps.Config.Fingerprint); err != nil {
+			deps.Logger.Warn("Initialization failed", map[string]any{"error": err.Error()})
+		}
+
+		var req protocol.OpenAIResponsesCompactRequest
+		if apiErr := decodeRequestBody(r.Body, &req); apiErr != nil {
+			deps.Logger.Warn("Failed to parse OpenAI Responses compact request body", map[string]any{"error": apiErr.Message})
+			sendError(w, apiErr)
+			return
+		}
+
+		deps.Logger.Debug("OpenAI Responses compact request received", map[string]any{
+			"model": req.Model,
+		})
+
+		ccReq, err := protocol.OpenAIResponsesCompactToCommandCode(&req)
+		if err != nil {
+			deps.Logger.Error("Failed to convert OpenAI Responses compact request to CommandCode", map[string]any{"error": err.Error()})
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to convert request").WithCode(http.StatusInternalServerError))
+			return
+		}
+		handleCommandCodeResponsesRequest(w, r, deps, ccAPIKey, req.Model, false, ccReq, true)
+	}
+}
+
+func handleCommandCodeResponsesRequest(w http.ResponseWriter, r *http.Request, deps *HandlerDependencies, ccAPIKey string, model string, stream bool, ccReq *protocol.CommandCodeRequest, compact bool) {
+	sessionID := deps.SessionStore.Resolve(r.Header, ccAPIKey)
+	ccBody, err := json.Marshal(ccReq)
+	if err != nil {
+		deps.Logger.Error("Failed to marshal CommandCode request", map[string]any{"error": err.Error()})
+		sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to marshal request").WithCode(http.StatusInternalServerError))
+		return
+	}
+
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	resp, err := deps.Client.Forward(ctx, ccBody, ccAPIKey, r.Header, sessionID, deps.Config.Fingerprint)
+	if err != nil {
+		deps.Logger.Error("Failed to forward request", map[string]any{"error": err.Error()})
+		sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to forward request").WithCode(http.StatusBadGateway))
+		return
+	}
+	defer resp.Body.Close()
+
+	if stream {
+		if handled := handleUpstreamStatus(w, resp, deps.Logger); handled {
+			return
+		}
+		streamWriter := newDelayedSSEWriter(w)
+		responseID := protocol.ResponseID("resp")
+		if err := commandCodeStreamToOpenAIResponsesSSE(resp.Body, streamWriter, responseID, model, time.Now().Unix(), deps.Logger, streamIdleTimeout); err != nil {
+			handleStreamingError(w, streamWriter, deps.Logger, err)
+			return
+		}
+		consecutiveTimeouts.Store(0)
+		streamWriter.WriteDone()
+		return
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			deps.Logger.Error("Failed to read upstream response body", map[string]any{"error": err.Error()})
+			sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to read response").WithCode(http.StatusBadGateway))
+			return
+		}
+		deps.Logger.Warn("Upstream non-200 response", map[string]any{"status": resp.StatusCode})
+		sendError(w, apierror.MapStatus(resp.StatusCode, string(body)))
+		return
+	}
+
+	openaiResp, err := commandCodeStreamToOpenAIWithIdleTimeout(resp.Body, model, generateCompletionID(), time.Now().Unix(), deps.Logger, nonStreamIdleTimeout)
+	if err != nil {
+		if apiErr, ok := err.(*apierror.APIError); ok {
+			sendError(w, apiErr)
+			return
+		}
+		deps.Logger.Error("Failed to parse upstream response", map[string]any{"error": err.Error()})
+		sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Failed to parse response").WithCode(http.StatusBadGateway))
+		return
+	}
+
+	var responseObject *protocol.OpenAIResponseObject
+	message := openaiResp.Choices[0].Message
+	if compact {
+		responseObject = protocol.BuildOpenAICompactionObject(protocol.ResponseID("resp"), time.Now().Unix(), fmt.Sprint(message.Content), openaiResp.Usage)
+	} else {
+		responseObject = protocol.BuildOpenAIResponseObject(protocol.ResponseID("resp"), model, time.Now().Unix(), fmt.Sprint(message.Content), message.ToolCalls, openaiResp.Usage)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(responseObject)
+}
+
 // HandleMessages handles Anthropic messages endpoint
 func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -538,6 +670,159 @@ func decodeRequestBody(body io.Reader, target any) *apierror.APIError {
 
 func commandCodeStreamToOpenAI(reader io.Reader, model string, completionID string, created int64, logger *logging.Logger) (*protocol.OpenAIResponse, error) {
 	return commandCodeStreamToOpenAIWithIdleTimeout(reader, model, completionID, created, logger, 0)
+}
+
+func commandCodeStreamToOpenAIResponsesSSE(reader io.Reader, writer io.Writer, responseID string, model string, created int64, logger *logging.Logger, idleTimeout time.Duration) error {
+	createdEvent := protocol.BuildOpenAIResponseObject(responseID, model, created, "", nil, nil)
+	if err := writeResponseSSEEvent(writer, "response.created", createdEvent); err != nil {
+		return err
+	}
+
+	lines := streaming.ScanLines(reader)
+	var text strings.Builder
+	usage := &protocol.Usage{}
+	outputIndex := 0
+	contentIndex := 0
+
+	for {
+		line, err := streaming.NextLine(lines, idleTimeout)
+		if err != nil {
+			return err
+		}
+		if line == "" {
+			break
+		}
+		if line == "[DONE]" {
+			continue
+		}
+
+		var event streaming.CommandCodeEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			return err
+		}
+
+		switch event.Type {
+		case "text-delta":
+			delta := streaming.TextDeltaContent(event)
+			if delta == "" {
+				continue
+			}
+			text.WriteString(delta)
+			if err := writeResponseSSEEvent(writer, "response.output_text.delta", map[string]any{
+				"type":          "response.output_text.delta",
+				"item_id":       responseID,
+				"output_index":  outputIndex,
+				"content_index": contentIndex,
+				"delta":         delta,
+			}); err != nil {
+				return err
+			}
+		case "delta":
+			delta := event.Delta
+			if delta == "" {
+				continue
+			}
+			text.WriteString(delta)
+			if err := writeResponseSSEEvent(writer, "response.output_text.delta", map[string]any{
+				"type":          "response.output_text.delta",
+				"item_id":       responseID,
+				"output_index":  outputIndex,
+				"content_index": contentIndex,
+				"delta":         delta,
+			}); err != nil {
+				return err
+			}
+		case "text":
+			delta := event.Text
+			if delta == "" {
+				continue
+			}
+			text.WriteString(delta)
+			if err := writeResponseSSEEvent(writer, "response.output_text.delta", map[string]any{
+				"type":          "response.output_text.delta",
+				"item_id":       responseID,
+				"output_index":  outputIndex,
+				"content_index": contentIndex,
+				"delta":         delta,
+			}); err != nil {
+				return err
+			}
+		case "tool-call", "toolCall":
+			arguments := "{}"
+			if event.Input != nil {
+				if inputString, ok := event.Input.(string); ok {
+					arguments = inputString
+				} else if inputBytes, err := json.Marshal(event.Input); err == nil {
+					arguments = string(inputBytes)
+				}
+			}
+			if err := writeResponseSSEEvent(writer, "response.output_item.done", map[string]any{
+				"type":         "response.output_item.done",
+				"output_index": outputIndex,
+				"item": map[string]any{
+					"id":        event.ToolCallID,
+					"type":      "function_call",
+					"status":    "completed",
+					"call_id":   event.ToolCallID,
+					"name":      event.ToolName,
+					"arguments": arguments,
+				},
+			}); err != nil {
+				return err
+			}
+			outputIndex++
+		case "finish", "finish-step":
+			if event.TotalUsage != nil {
+				usage.InputTokens = event.TotalUsage.InputTokens
+				usage.OutputTokens = event.TotalUsage.OutputTokens
+				usage.CachedInputTokens = event.TotalUsage.CachedInputTokens
+			} else if event.Usage != nil {
+				usage.InputTokens = event.Usage.InputTokens
+				usage.OutputTokens = event.Usage.OutputTokens
+				usage.CachedInputTokens = event.Usage.CachedInputTokens
+			}
+		case "error":
+			if logger != nil {
+				logger.Warn("CommandCode stream error event", map[string]any{
+					"message": commandCodeEventMessage(event),
+				})
+			}
+		}
+	}
+
+	if usage.OutputTokens == 0 {
+		if logger != nil {
+			logger.Warn("Zero output tokens from upstream (streaming)", nil)
+		}
+		return apierror.NewAPIError(apierror.ErrorTypeRateLimit, "Empty response from upstream (zero output tokens)").WithCode(http.StatusTooManyRequests)
+	}
+
+	if err := writeResponseSSEEvent(writer, "response.output_text.done", map[string]any{
+		"type":          "response.output_text.done",
+		"item_id":       responseID,
+		"output_index":  0,
+		"content_index": 0,
+		"text":          text.String(),
+	}); err != nil {
+		return err
+	}
+	completed := protocol.BuildOpenAIResponseObject(responseID, model, created, text.String(), nil, usage)
+	return writeResponseSSEEvent(writer, "response.completed", map[string]any{
+		"type":     "response.completed",
+		"response": completed,
+	})
+}
+
+func writeResponseSSEEvent(writer io.Writer, event string, data any) error {
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(writer, "event: %s\n", event); err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(writer, "data: %s\n\n", string(payload))
+	return err
 }
 
 func commandCodeStreamToAnthropicMessagesWithIdleTimeout(reader io.Reader, model string, messageID string, logger *logging.Logger, idleTimeout time.Duration) (*protocol.AnthropicResponse, error) {
