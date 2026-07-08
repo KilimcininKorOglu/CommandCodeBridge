@@ -358,7 +358,7 @@ func HandleMessagesCountTokens(deps *HandlerDependencies) http.HandlerFunc {
 // HandleModels handles the models endpoint
 func HandleModels(deps *HandlerDependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ccAPIKey := r.Context().Value("ccAPIKey").(string)
+		ccAPIKey, _ := extractCCAPIKey(deps.Config.CCAPIKey)
 
 		// Get models
 		modelData, err := deps.ModelManager.GetModels(r.Context(), ccAPIKey)
