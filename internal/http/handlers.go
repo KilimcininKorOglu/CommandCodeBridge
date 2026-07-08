@@ -316,6 +316,12 @@ func HandleMessagesCountTokens(deps *HandlerDependencies) http.HandlerFunc {
 			return
 		}
 
+		deps.Logger.Debug("Anthropic token count request received", map[string]any{
+			"model":    req.Model,
+			"messages": len(req.Messages),
+			"tools":    len(req.Tools),
+		})
+
 		sessionID := deps.SessionStore.Resolve(r.Header, ccAPIKey)
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
@@ -347,11 +353,17 @@ func HandleMessagesCountTokens(deps *HandlerDependencies) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		if _, err := io.Copy(w, resp.Body); err != nil {
+		written, err := io.Copy(w, resp.Body)
+		if err != nil {
 			deps.Logger.Error("Failed to write token count response", map[string]any{
 				"error": err.Error(),
 			})
+			return
 		}
+		deps.Logger.Debug("Anthropic token count response completed", map[string]any{
+			"status": resp.StatusCode,
+			"bytes":  written,
+		})
 	}
 }
 
