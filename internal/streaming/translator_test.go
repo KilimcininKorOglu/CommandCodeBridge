@@ -46,6 +46,59 @@ func TestOpenAITranslatorIgnoresCommandCodeErrorEvents(t *testing.T) {
 	}
 }
 
+func TestOpenAITranslatorStreamsToolCallAsIncrementalDeltas(t *testing.T) {
+	translator := NewOpenAITranslator("model", "chatcmpl-test", 1)
+	events, err := translator.ParseLine(`{"type":"tool-call","toolCallId":"call_1","toolName":"lookup","input":{"q":"x"}}`)
+	if err != nil {
+		t.Fatalf("ParseLine() error = %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("len(events) = %d, want 2", len(events))
+	}
+
+	var startChunk OpenAIChunk
+	if err := json.Unmarshal([]byte(events[0].Data), &startChunk); err != nil {
+		t.Fatalf("start chunk JSON error = %v", err)
+	}
+	startToolCall := startChunk.Choices[0].Delta.ToolCalls[0]
+	if got, want := startToolCall.Index, 0; got != want {
+		t.Fatalf("start tool call index = %d, want %d", got, want)
+	}
+	if got, want := startToolCall.ID, "call_1"; got != want {
+		t.Fatalf("start tool call ID = %q, want %q", got, want)
+	}
+	if got, want := startToolCall.Type, "function"; got != want {
+		t.Fatalf("start tool call type = %q, want %q", got, want)
+	}
+	if startToolCall.Function == nil {
+		t.Fatal("start tool call function = nil, want function")
+	}
+	if got, want := startToolCall.Function.Name, "lookup"; got != want {
+		t.Fatalf("start tool call function name = %q, want %q", got, want)
+	}
+	if startToolCall.Function.Arguments != "" {
+		t.Fatalf("start tool call arguments = %q, want empty", startToolCall.Function.Arguments)
+	}
+
+	var argumentsChunk OpenAIChunk
+	if err := json.Unmarshal([]byte(events[1].Data), &argumentsChunk); err != nil {
+		t.Fatalf("arguments chunk JSON error = %v", err)
+	}
+	argumentsToolCall := argumentsChunk.Choices[0].Delta.ToolCalls[0]
+	if got, want := argumentsToolCall.Index, 0; got != want {
+		t.Fatalf("arguments tool call index = %d, want %d", got, want)
+	}
+	if argumentsToolCall.ID != "" || argumentsToolCall.Type != "" {
+		t.Fatalf("arguments tool call = %#v, want only index and function arguments", argumentsToolCall)
+	}
+	if argumentsToolCall.Function == nil {
+		t.Fatal("arguments tool call function = nil, want function")
+	}
+	if got, want := argumentsToolCall.Function.Arguments, `{"q":"x"}`; got != want {
+		t.Fatalf("arguments tool call function arguments = %q, want %q", got, want)
+	}
+}
+
 func TestOpenAITranslatorHandlesReasoningDelta(t *testing.T) {
 	translator := NewOpenAITranslator("model", "chatcmpl-test", 1)
 	events, err := translator.ParseLine(`{"type":"reasoning-delta","text":"thinking"}`)

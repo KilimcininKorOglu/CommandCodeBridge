@@ -189,46 +189,59 @@ func (t *OpenAITranslator) handleReasoningDelta(event CommandCodeEvent) ([]SSEEv
 	}, nil
 }
 
-// handleToolCall processes tool call events
+// handleToolCall processes tool call events.
 func (t *OpenAITranslator) handleToolCall(event CommandCodeEvent) ([]SSEEvent, error) {
-	toolCall := ToolCall{
-		ID:   event.ToolCallID,
-		Type: "function",
-		Function: FunctionCall{
+	arguments := ""
+	if inputString, ok := event.Input.(string); ok {
+		arguments = inputString
+	} else if inputBytes, err := json.Marshal(event.Input); err == nil {
+		arguments = string(inputBytes)
+	}
+
+	toolCallStart := ToolCall{
+		Index: 0,
+		ID:    event.ToolCallID,
+		Type:  "function",
+		Function: &FunctionCall{
 			Name: event.ToolName,
 		},
 	}
-
-	if inputString, ok := event.Input.(string); ok {
-		toolCall.Function.Arguments = inputString
-	} else if inputBytes, err := json.Marshal(event.Input); err == nil {
-		toolCall.Function.Arguments = string(inputBytes)
-	}
-
-	chunk := OpenAIChunk{
-		ID:      t.completionID,
-		Object:  "chat.completion.chunk",
-		Created: t.created,
-		Model:   t.model,
-		Choices: []OpenAIChoice{
-			{
-				Index: 0,
-				Delta: &OpenAIMessage{
-					Content:   nil,
-					ToolCalls: []ToolCall{toolCall},
-				},
-			},
+	toolCallArguments := ToolCall{
+		Index: 0,
+		Function: &FunctionCall{
+			Arguments: arguments,
 		},
 	}
 
-	data, err := json.Marshal(chunk)
-	if err != nil {
-		return nil, err
-	}
+	return t.openAIToolCallEvents(toolCallStart, toolCallArguments)
+}
 
-	return []SSEEvent{
-		{Event: "", Data: string(data)},
-	}, nil
+func (t *OpenAITranslator) openAIToolCallEvents(toolCalls ...ToolCall) ([]SSEEvent, error) {
+	events := make([]SSEEvent, 0, len(toolCalls))
+	for _, toolCall := range toolCalls {
+		chunk := OpenAIChunk{
+			ID:      t.completionID,
+			Object:  "chat.completion.chunk",
+			Created: t.created,
+			Model:   t.model,
+			Choices: []OpenAIChoice{
+				{
+					Index: 0,
+					Delta: &OpenAIMessage{
+						Content:   nil,
+						ToolCalls: []ToolCall{toolCall},
+					},
+				},
+			},
+		}
+
+		data, err := json.Marshal(chunk)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, SSEEvent{Event: "", Data: string(data)})
+	}
+	return events, nil
 }
 
 // handleToolResult processes tool result events

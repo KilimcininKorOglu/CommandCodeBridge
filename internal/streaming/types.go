@@ -68,13 +68,14 @@ type OpenAIMessage struct {
 
 // ToolCall represents a tool call in OpenAI format
 type ToolCall struct {
-	ID       string       `json:"id"`
-	Type     string       `json:"type"`
-	Function FunctionCall `json:"function"`
+	Index    int           `json:"index"`
+	ID       string        `json:"id,omitempty"`
+	Type     string        `json:"type,omitempty"`
+	Function *FunctionCall `json:"function,omitempty"`
 }
 
 // FunctionCall represents a function call invocation
 type FunctionCall struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
