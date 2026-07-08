@@ -230,6 +230,9 @@ func openAIContentPartToCommandCode(itemMap map[string]any, toolNameByID map[str
 			}
 		}
 	case "input_image", "image":
+		if url, ok := openAIImagePartToURL(itemMap); ok {
+			return []CommandCodeContent{{Type: "image", Image: url}}
+		}
 		if text := contentPartToString(itemMap); text != "" {
 			return []CommandCodeContent{{Type: "text", Text: text}}
 		}
@@ -273,6 +276,55 @@ func openAIContentPartToCommandCode(itemMap map[string]any, toolNameByID map[str
 		}
 	}
 	return nil
+}
+
+func openAIImagePartToURL(itemMap map[string]any) (string, bool) {
+	if url, ok := itemMap["image_url"].(string); ok && url != "" {
+		return url, true
+	}
+	if imageURL, ok := itemMap["image_url"].(map[string]any); ok {
+		if url, ok := imageURL["url"].(string); ok && url != "" {
+			return url, true
+		}
+	}
+	if url, ok := itemMap["image"].(string); ok && url != "" {
+		return url, true
+	}
+	if image, ok := itemMap["image"].(map[string]any); ok {
+		if url, ok := image["url"].(string); ok && url != "" {
+			return url, true
+		}
+	}
+	if url, ok := itemMap["url"].(string); ok && url != "" {
+		return url, true
+	}
+
+	data, ok := firstStringFromAny(itemMap, "data", "image_base64", "base64")
+	if !ok || data == "" {
+		return "", false
+	}
+	mediaType, _ := firstStringFromAny(itemMap, "media_type", "mime_type", "mimeType")
+	if mediaType == "" {
+		mediaType = "image/png"
+	}
+	if strings.HasPrefix(data, "data:") {
+		return data, true
+	}
+	return fmt.Sprintf("data:%s;base64,%s", mediaType, data), true
+}
+
+func firstStringFromAny(values map[string]any, keys ...string) (string, bool) {
+	for _, key := range keys {
+		if value, ok := values[key].(string); ok {
+			return value, true
+		}
+		if nested, ok := values[key].(map[string]any); ok {
+			if value, ok := firstStringFromAny(nested, "url", "data", "image_base64", "base64"); ok {
+				return value, true
+			}
+		}
+	}
+	return "", false
 }
 
 func openAIContentToString(content any) (string, error) {

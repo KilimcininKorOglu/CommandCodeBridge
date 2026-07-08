@@ -81,6 +81,65 @@ func TestOpenAIToCommandCodeMovesSystemMessagesOutOfMessageList(t *testing.T) {
 	}
 }
 
+func TestOpenAIToCommandCodeConvertsInputImageURL(t *testing.T) {
+	req := &OpenAIRequest{
+		Model: "model",
+		Messages: []OpenAIMessage{
+			{
+				Role: "user",
+				Content: []any{
+					map[string]any{
+						"type":      "input_image",
+						"image_url": "https://example.com/image.png",
+					},
+				},
+			},
+		},
+	}
+
+	ccReq, err := OpenAIToCommandCode(req)
+	if err != nil {
+		t.Fatalf("OpenAIToCommandCode() error = %v", err)
+	}
+	image := ccReq.Params.Messages[0].Content[0]
+	if got, want := image.Type, "image"; got != want {
+		t.Fatalf("image Type = %q, want %q", got, want)
+	}
+	if got, want := image.Image, "https://example.com/image.png"; got != want {
+		t.Fatalf("image URL = %q, want %q", got, want)
+	}
+}
+
+func TestOpenAIToCommandCodeConvertsInputImageBase64(t *testing.T) {
+	req := &OpenAIRequest{
+		Model: "model",
+		Messages: []OpenAIMessage{
+			{
+				Role: "user",
+				Content: []any{
+					map[string]any{
+						"type":       "input_image",
+						"data":       "aW1hZ2U=",
+						"media_type": "image/jpeg",
+					},
+				},
+			},
+		},
+	}
+
+	ccReq, err := OpenAIToCommandCode(req)
+	if err != nil {
+		t.Fatalf("OpenAIToCommandCode() error = %v", err)
+	}
+	image := ccReq.Params.Messages[0].Content[0]
+	if got, want := image.Type, "image"; got != want {
+		t.Fatalf("image Type = %q, want %q", got, want)
+	}
+	if got, want := image.Image, "data:image/jpeg;base64,aW1hZ2U="; got != want {
+		t.Fatalf("image URL = %q, want %q", got, want)
+	}
+}
+
 func TestOpenAIToCommandCodeConvertsContentBlockToolResult(t *testing.T) {
 	req := &OpenAIRequest{
 		Model: "model",
