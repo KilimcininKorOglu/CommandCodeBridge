@@ -66,11 +66,14 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 		}
 
 		deps.Logger.Debug("OpenAI request received", map[string]any{
-			"model":      openaiReq.Model,
-			"stream":     openaiReq.Stream,
-			"max_tokens": openaiReq.MaxTokens,
-			"messages":   len(openaiReq.Messages),
-			"tools":      len(openaiReq.Tools),
+			"model":               openaiReq.Model,
+			"stream":              openaiReq.Stream,
+			"max_tokens":          openaiReq.MaxTokens,
+			"messages":            len(openaiReq.Messages),
+			"tools":               len(openaiReq.Tools),
+			"reasoning_effort":    openaiReq.ReasoningEffort,
+			"thinking_enabled":    openaiReq.Thinking != nil,
+			"parallel_tool_calls": openaiReq.ParallelToolCalls,
 		})
 
 		// Get session ID
