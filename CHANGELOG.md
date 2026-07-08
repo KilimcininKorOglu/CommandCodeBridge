@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.1.4] - 2026-07-08
+
+### Added
+- Add native Anthropic support.
+- Make models endpoint public.
+- Add token count lifecycle logs.
+- Log Anthropic thinking propagation.
+- Add OpenAI Responses endpoints.
+
+### Changed
+- Update default log level to debug.
+- Add OpenAI request debug fields.
+- Simplify API key extraction.
+
+### Fixed
+- Preserve Anthropic tool result names.
+- Preserve tool role for Anthropic tool results.
+- Fall back to config key on invalid bearer.
+- Preserve OpenAI content block tool results.
+- Stream OpenAI tool calls as deltas.
+- Support OpenAI input image blocks.
+- Support OpenAI Responses top-level tools.
+
 ## [1.1.3] - 2026-07-08
 
 ### Added

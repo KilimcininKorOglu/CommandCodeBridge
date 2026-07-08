@@ -12,7 +12,7 @@ import (
 
 const (
 	// Version is the proxy version
-	Version = "1.1.3"
+	Version = "1.1.4"
 
 	// CommandCodeVersionFallback is the fallback version if fetch fails
 	CommandCodeVersionFallback = "0.34.1"
