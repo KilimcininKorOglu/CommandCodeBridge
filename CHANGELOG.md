@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.1.3] - 2026-07-08
+
+### Added
+- No added changes.
+
+### Changed
+- No changed changes.
+
+### Fixed
+- Improve Claude CLI compatibility.
+
 ## [1.1.2] - 2026-07-08
 
 ### Added
