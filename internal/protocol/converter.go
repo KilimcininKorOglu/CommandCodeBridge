@@ -155,6 +155,7 @@ func AnthropicMessagesToCommandCode(req *AnthropicRequest) (*CommandCodeRequest,
 		return nil, errors.New("nil request")
 	}
 
+	toolNameByID := buildAnthropicToolNameMap(req.Messages)
 	ccMessages := make([]CommandCodeMessage, 0, len(req.Messages))
 	systemParts := []string{}
 	if system := anthropicSystemToString(req.System); system != "" {
@@ -169,7 +170,7 @@ func AnthropicMessagesToCommandCode(req *AnthropicRequest) (*CommandCodeRequest,
 			continue
 		}
 
-		ccMsg, err := anthropicMessageToCommandCode(msg)
+		ccMsg, err := anthropicMessageToCommandCode(msg, toolNameByID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert message: %w", err)
 		}

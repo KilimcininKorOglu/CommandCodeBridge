@@ -173,6 +173,47 @@ func TestAnthropicMessagesToCommandCodeConvertsSystemArrayAndMidConversationSyst
 	}
 }
 
+func TestAnthropicMessagesToCommandCodePreservesToolResultName(t *testing.T) {
+	req := &AnthropicRequest{
+		Model: "model",
+		Messages: []AnthropicMessage{
+			{
+				Role: "assistant",
+				Content: []any{
+					map[string]any{
+						"type":  "tool_use",
+						"id":    "call_1",
+						"name":  "lookup",
+						"input": map[string]any{"q": "x"},
+					},
+				},
+			},
+			{
+				Role: "user",
+				Content: []any{
+					map[string]any{
+						"type":        "tool_result",
+						"tool_use_id": "call_1",
+						"content":     "result",
+					},
+				},
+			},
+		},
+	}
+
+	ccReq, err := AnthropicMessagesToCommandCode(req)
+	if err != nil {
+		t.Fatalf("AnthropicMessagesToCommandCode() error = %v", err)
+	}
+	toolResult := ccReq.Params.Messages[1].Content[0]
+	if got, want := toolResult.Type, "tool-result"; got != want {
+		t.Fatalf("ToolResult.Type = %q, want %q", got, want)
+	}
+	if got, want := toolResult.ToolName, "lookup"; got != want {
+		t.Fatalf("ToolResult.ToolName = %q, want %q", got, want)
+	}
+}
+
 func TestAnthropicMessagesToCommandCodePreservesClaudeCodeRequestFields(t *testing.T) {
 	req := &AnthropicRequest{
 		Model:         "model",

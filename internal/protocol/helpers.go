@@ -105,6 +105,35 @@ func buildOpenAIToolNameMap(messages []OpenAIMessage) map[string]string {
 	return toolNameByID
 }
 
+// buildAnthropicToolNameMap maps tool use IDs to tool names from assistant messages.
+func buildAnthropicToolNameMap(messages []AnthropicMessage) map[string]string {
+	toolNameByID := map[string]string{}
+	for _, msg := range messages {
+		if msg.Role != "assistant" {
+			continue
+		}
+		parts, ok := msg.Content.([]any)
+		if !ok {
+			continue
+		}
+		for _, part := range parts {
+			partMap, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			if partType, _ := partMap["type"].(string); partType != "tool_use" {
+				continue
+			}
+			id := firstString(partMap, "id", "toolCallId")
+			name := firstString(partMap, "name", "toolName")
+			if id != "" && name != "" {
+				toolNameByID[id] = name
+			}
+		}
+	}
+	return toolNameByID
+}
+
 // openaiMessageToCommandCode converts an OpenAI message to CommandCode format
 func openaiMessageToCommandCode(msg OpenAIMessage, toolNameByID map[string]string) (CommandCodeMessage, error) {
 	if msg.Role == "tool" {
@@ -323,7 +352,7 @@ func anthropicSystemToString(system any) string {
 }
 
 // anthropicMessageToCommandCode converts an Anthropic message to CommandCode format.
-func anthropicMessageToCommandCode(msg AnthropicMessage) (CommandCodeMessage, error) {
+func anthropicMessageToCommandCode(msg AnthropicMessage, toolNameByID map[string]string) (CommandCodeMessage, error) {
 	ccMsg := CommandCodeMessage{Role: msg.Role}
 
 	switch v := msg.Content.(type) {
@@ -337,7 +366,7 @@ func anthropicMessageToCommandCode(msg AnthropicMessage) (CommandCodeMessage, er
 			if !ok {
 				continue
 			}
-			ccMsg.Content = append(ccMsg.Content, anthropicContentPartToCommandCode(itemMap)...)
+			ccMsg.Content = append(ccMsg.Content, anthropicContentPartToCommandCode(itemMap, toolNameByID)...)
 		}
 	default:
 		if text := contentPartToString(v); text != "" {
@@ -348,7 +377,7 @@ func anthropicMessageToCommandCode(msg AnthropicMessage) (CommandCodeMessage, er
 	return ccMsg, nil
 }
 
-func anthropicContentPartToCommandCode(itemMap map[string]any) []CommandCodeContent {
+func anthropicContentPartToCommandCode(itemMap map[string]any, toolNameByID map[string]string) []CommandCodeContent {
 	itemType, _ := itemMap["type"].(string)
 	switch itemType {
 	case "text", "thinking", "redacted_thinking":
@@ -366,6 +395,7 @@ func anthropicContentPartToCommandCode(itemMap map[string]any) []CommandCodeCont
 		name := firstString(itemMap, "name", "toolName")
 		return []CommandCodeContent{{Type: "tool-call", ToolCallID: id, ToolName: name, Input: itemMap["input"]}}
 	case "tool_result":
+		toolCallID := firstString(itemMap, "tool_use_id", "toolCallId")
 		output := contentPartToString(itemMap["content"])
 		outputType := "text"
 		if isError, ok := itemMap["is_error"].(bool); ok && isError {
@@ -373,7 +403,8 @@ func anthropicContentPartToCommandCode(itemMap map[string]any) []CommandCodeCont
 		}
 		return []CommandCodeContent{{
 			Type:       "tool-result",
-			ToolCallID: firstString(itemMap, "tool_use_id", "toolCallId"),
+			ToolCallID: toolCallID,
+			ToolName:   toolNameByID[toolCallID],
 			Output: &CommandCodeToolOutput{
 				Type:  outputType,
 				Value: output,
