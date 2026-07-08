@@ -79,7 +79,7 @@ func StartAutoRefresh(ctx context.Context, logger Logger) {
 
 	// Initial refresh
 	if err := RefreshCommandCodeVersion(); err != nil {
-		logger.Debug("Failed to refresh CommandCode version on startup", map[string]interface{}{
+		logger.Debug("Failed to refresh CommandCode version on startup", map[string]any{
 			"error": err.Error(),
 		})
 	}
@@ -88,11 +88,11 @@ func StartAutoRefresh(ctx context.Context, logger Logger) {
 		select {
 		case <-ticker.C:
 			if err := RefreshCommandCodeVersion(); err != nil {
-				logger.Debug("Failed to refresh CommandCode version", map[string]interface{}{
+				logger.Debug("Failed to refresh CommandCode version", map[string]any{
 					"error": err.Error(),
 				})
 			} else {
-				logger.Info("CommandCode version refreshed", map[string]interface{}{
+				logger.Info("CommandCode version refreshed", map[string]any{
 					"version": GetCommandCodeVersion(),
 				})
 			}
@@ -104,6 +104,6 @@ func StartAutoRefresh(ctx context.Context, logger Logger) {
 
 // Logger interface for version logging
 type Logger interface {
-	Debug(msg string, fields map[string]interface{})
-	Info(msg string, fields map[string]interface{})
+	Debug(msg string, fields map[string]any)
+	Info(msg string, fields map[string]any)
 }
