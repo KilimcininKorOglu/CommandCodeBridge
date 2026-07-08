@@ -191,12 +191,24 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 			return
 		}
 
+		thinkingType := ""
+		thinkingEffort := ""
+		thinkingBudgetTokens := 0
+		if anthropicReq.Thinking != nil {
+			thinkingType = anthropicReq.Thinking.Type
+			thinkingEffort = anthropicReq.Thinking.Effort
+			thinkingBudgetTokens = anthropicReq.Thinking.BudgetTokens
+		}
+
 		deps.Logger.Debug("Anthropic request received", map[string]any{
-			"model":      anthropicReq.Model,
-			"stream":     anthropicReq.Stream,
-			"max_tokens": anthropicReq.MaxTokens,
-			"messages":   len(anthropicReq.Messages),
-			"tools":      len(anthropicReq.Tools),
+			"model":                  anthropicReq.Model,
+			"stream":                 anthropicReq.Stream,
+			"max_tokens":             anthropicReq.MaxTokens,
+			"messages":               len(anthropicReq.Messages),
+			"tools":                  len(anthropicReq.Tools),
+			"thinking_type":          thinkingType,
+			"thinking_effort":        thinkingEffort,
+			"thinking_budget_tokens": thinkingBudgetTokens,
 		})
 
 		// Get session ID
@@ -211,6 +223,11 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 			sendError(w, apierror.NewAPIError(apierror.ErrorTypeInternal, "Failed to convert request").WithCode(http.StatusInternalServerError))
 			return
 		}
+
+		deps.Logger.Debug("CommandCode request prepared", map[string]any{
+			"reasoning_effort": ccReq.Params.ReasoningEffort,
+			"thinking_enabled": ccReq.Params.Thinking != nil,
+		})
 
 		// Marshal CommandCode request
 		ccBody, err := json.Marshal(ccReq)
