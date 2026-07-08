@@ -142,7 +142,10 @@ func openaiMessageToCommandCode(msg OpenAIMessage, toolNameByID map[string]strin
 
 	ccMsg := CommandCodeMessage{
 		Role:    msg.Role,
-		Content: openAIContentToCommandCode(msg.Content),
+		Content: openAIContentToCommandCode(msg.Content, toolNameByID),
+	}
+	if commandCodeContentHasType(ccMsg.Content, "tool-result") {
+		ccMsg.Role = "tool"
 	}
 
 	for _, tc := range msg.ToolCalls {
@@ -191,7 +194,7 @@ func openaiToolMessageToCommandCode(msg OpenAIMessage, toolNameByID map[string]s
 	}, nil
 }
 
-func openAIContentToCommandCode(content any) []CommandCodeContent {
+func openAIContentToCommandCode(content any, toolNameByID map[string]string) []CommandCodeContent {
 	switch v := content.(type) {
 	case string:
 		if v == "" {
@@ -205,7 +208,7 @@ func openAIContentToCommandCode(content any) []CommandCodeContent {
 			if !ok {
 				continue
 			}
-			ccContent = append(ccContent, openAIContentPartToCommandCode(itemMap)...)
+			ccContent = append(ccContent, openAIContentPartToCommandCode(itemMap, toolNameByID)...)
 		}
 		return ccContent
 	default:
@@ -213,7 +216,7 @@ func openAIContentToCommandCode(content any) []CommandCodeContent {
 	}
 }
 
-func openAIContentPartToCommandCode(itemMap map[string]any) []CommandCodeContent {
+func openAIContentPartToCommandCode(itemMap map[string]any, toolNameByID map[string]string) []CommandCodeContent {
 	itemType, _ := itemMap["type"].(string)
 	switch itemType {
 	case "text", "input_text", "output_text", "refusal", "thinking", "redacted_thinking", "reasoning", "document", "search_result":
@@ -239,12 +242,31 @@ func openAIContentPartToCommandCode(itemMap map[string]any) []CommandCodeContent
 		}
 		return []CommandCodeContent{{Type: "tool-call", ToolCallID: id, ToolName: name, Input: input}}
 	case "tool_result", "tool-result":
-		if text := contentPartToString(itemMap["content"]); text != "" {
-			return []CommandCodeContent{{Type: "text", Text: text}}
+		toolCallID := firstString(itemMap, "tool_call_id", "toolCallId", "tool_use_id", "id")
+		toolName := firstString(itemMap, "name", "toolName")
+		if toolName == "" {
+			toolName = toolNameByID[toolCallID]
 		}
-		if text := contentPartToString(itemMap["output"]); text != "" {
-			return []CommandCodeContent{{Type: "text", Text: text}}
+		if toolName == "" {
+			toolName = "unknown"
 		}
+		output := contentPartToString(itemMap["content"])
+		if output == "" {
+			output = contentPartToString(itemMap["output"])
+		}
+		outputType := "text"
+		if isError, ok := itemMap["is_error"].(bool); ok && isError {
+			outputType = "error-text"
+		}
+		return []CommandCodeContent{{
+			Type:       "tool-result",
+			ToolCallID: toolCallID,
+			ToolName:   toolName,
+			Output: &CommandCodeToolOutput{
+				Type:  outputType,
+				Value: output,
+			},
+		}}
 	default:
 		if text := contentPartToString(itemMap); text != "" {
 			return []CommandCodeContent{{Type: "text", Text: text}}

@@ -81,6 +81,61 @@ func TestOpenAIToCommandCodeMovesSystemMessagesOutOfMessageList(t *testing.T) {
 	}
 }
 
+func TestOpenAIToCommandCodeConvertsContentBlockToolResult(t *testing.T) {
+	req := &OpenAIRequest{
+		Model: "model",
+		Messages: []OpenAIMessage{
+			{
+				Role: "assistant",
+				ToolCalls: []ToolCall{
+					{
+						ID:   "call_1",
+						Type: "function",
+						Function: FunctionCall{
+							Name:      "lookup",
+							Arguments: `{"q":"x"}`,
+						},
+					},
+				},
+			},
+			{
+				Role: "user",
+				Content: []any{
+					map[string]any{
+						"type":         "tool_result",
+						"tool_call_id": "call_1",
+						"content":      "result",
+					},
+				},
+			},
+		},
+	}
+
+	ccReq, err := OpenAIToCommandCode(req)
+	if err != nil {
+		t.Fatalf("OpenAIToCommandCode() error = %v", err)
+	}
+	toolResult := ccReq.Params.Messages[1]
+	if got, want := toolResult.Role, "tool"; got != want {
+		t.Fatalf("tool result role = %q, want %q", got, want)
+	}
+	if got, want := toolResult.Content[0].Type, "tool-result"; got != want {
+		t.Fatalf("tool result Type = %q, want %q", got, want)
+	}
+	if got, want := toolResult.Content[0].ToolCallID, "call_1"; got != want {
+		t.Fatalf("tool result ID = %q, want %q", got, want)
+	}
+	if got, want := toolResult.Content[0].ToolName, "lookup"; got != want {
+		t.Fatalf("tool result name = %q, want %q", got, want)
+	}
+	if toolResult.Content[0].Output == nil {
+		t.Fatal("tool result Output = nil, want output")
+	}
+	if got, want := toolResult.Content[0].Output.Value, "result"; got != want {
+		t.Fatalf("tool result output = %q, want %q", got, want)
+	}
+}
+
 func TestOpenAIToCommandCodeConvertsAssistantToolCallsAndToolResponses(t *testing.T) {
 	req := &OpenAIRequest{
 		Model: "model",
