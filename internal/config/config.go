@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -65,7 +66,16 @@ func Load(configPath string) (*Config, error) {
 	cfg := defaults
 
 	// Load from JSON file if exists
-	if data, err := os.ReadFile(configPath); err == nil {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		// A missing config file is tolerated (fall back to defaults + env),
+		// but any other read failure (permission denied, SELinux label
+		// mismatch, I/O error) is fatal — otherwise the proxy silently runs
+		// with empty credentials and every authenticated request fails.
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read config %q: %w", configPath, err)
+		}
+	} else {
 		if err := json.Unmarshal(data, &cfg); err != nil {
 			return nil, err
 		}
