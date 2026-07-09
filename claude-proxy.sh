@@ -5,6 +5,13 @@
 #
 # Uses claude --settings to override the global ~/.claude/settings.json env
 # block, which would otherwise point at a different provider.
+#
+# Usage:
+#   ccp                      # interactive, default model
+#   ccp -p "hello"           # one-shot prompt
+#   ccp --model zai-org/GLM-5.2        # override main/sonnet/opus model
+#   ccp --model X --haiku Y            # override both tiers
+# All other args are passed through to claude.
 set -euo pipefail
 
 CONFIG="${CONFIG:-data/config.json}"
@@ -25,8 +32,26 @@ if [[ -z "$PROXY_TOKEN" ]]; then
   exit 1
 fi
 
+# Defaults — overridable via --model / --haiku flags below.
 MODEL="deepseek/deepseek-v4-pro"
 HAIKU="deepseek/deepseek-v4-flash"
+
+# Parse our own flags out of argv; everything else passes through to claude.
+PASSTHROUGH=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --model)
+      MODEL="$2"; shift 2 ;;
+    --model=*)
+      MODEL="${1#--model=}"; shift ;;
+    --haiku)
+      HAIKU="$2"; shift 2 ;;
+    --haiku=*)
+      HAIKU="${1#--haiku=}"; shift ;;
+    *)
+      PASSTHROUGH+=("$1"); shift ;;
+  esac
+done
 
 # Build settings JSON that overrides the global settings.json env block.
 # The proxy accepts the token via x-api-key (Anthropic SDK convention).
@@ -45,4 +70,4 @@ SETTINGS=$(cat <<EOF
 EOF
 )
 
-exec claude --settings "$SETTINGS" "$@"
+exec claude --settings "$SETTINGS" "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}"
