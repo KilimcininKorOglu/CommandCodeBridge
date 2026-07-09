@@ -284,6 +284,7 @@ func CommandCodeToAnthropicMessages(messageID string, model string, content []An
 	if usage != nil {
 		anthropicUsage.InputTokens = usage.InputTokens
 		anthropicUsage.OutputTokens = usage.OutputTokens
+		anthropicUsage.CacheReadInputTokens = usage.CachedInputTokens
 	}
 
 	return &AnthropicResponse{
@@ -342,9 +343,11 @@ func BuildAnthropicResponse(model string, fullText string, toolCalls []ToolCall,
 
 	content = append(content, toolCallsToAnthropicContent(toolCalls)...)
 
-	anthropicUsage := &AnthropicUsage{
-		InputTokens:  usage.InputTokens,
-		OutputTokens: usage.OutputTokens,
+	anthropicUsage := &AnthropicUsage{}
+	if usage != nil {
+		anthropicUsage.InputTokens = usage.InputTokens
+		anthropicUsage.OutputTokens = usage.OutputTokens
+		anthropicUsage.CacheReadInputTokens = usage.CachedInputTokens
 	}
 
 	return &AnthropicResponse{

@@ -45,7 +45,9 @@ func (t *AnthropicTranslator) Translate(reader io.Reader, writer io.Writer) erro
 
 // TranslateWithIdleTimeout translates a stream and fails when no line arrives before idleTimeout.
 func (t *AnthropicTranslator) TranslateWithIdleTimeout(reader io.Reader, writer io.Writer, idleTimeout time.Duration) error {
-	lines := ScanLines(reader)
+	done := make(chan struct{})
+	defer close(done)
+	lines := ScanLines(reader, done)
 	for {
 		line, err := NextLine(lines, idleTimeout)
 		if err != nil {
@@ -85,6 +87,11 @@ func (t *AnthropicTranslator) trackUsage(event CommandCodeEvent) {
 // OutputTokens returns the tracked output token count.
 func (t *AnthropicTranslator) OutputTokens() int {
 	return t.outputTokens
+}
+
+// GetUsage returns the tracked usage statistics
+func (t *AnthropicTranslator) GetUsage() (int, int, int) {
+	return t.inputTokens, t.outputTokens, t.cachedTokens
 }
 
 func (t *AnthropicTranslator) ParseLine(line string) ([]SSEEvent, error) {
