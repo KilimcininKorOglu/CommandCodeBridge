@@ -1,6 +1,10 @@
 package protocol
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestOpenAIToCommandCodeMapsToolChoiceRequiredToAny(t *testing.T) {
 	req := &OpenAIRequest{
@@ -376,5 +380,47 @@ func TestAnthropicMessagesToCommandCodePreservesClaudeCodeRequestFields(t *testi
 	}
 	if ccReq.Params.OutputConfig == nil {
 		t.Fatal("OutputConfig = nil, want preserved output config")
+	}
+}
+
+// TestAnthropicMessagesToCommandCodeOmitsNilMetadataAndThinking is a regression
+// test for commit 2a5caa4. Before the fix, nil *AnthropicMetadata and
+// *AnthropicThinking pointers were assigned into `any` interface fields,
+// producing non-nil interfaces that ignored omitempty and serialized as JSON
+// null. The upstream API rejects null params.metadata with HTTP 400, which
+// broke Claude Code CLI integration.
+func TestAnthropicMessagesToCommandCodeOmitsNilMetadataAndThinking(t *testing.T) {
+	req := &AnthropicRequest{
+		Model:    "model",
+		MaxTokens: 10,
+		Messages: []AnthropicMessage{{Role: "user", Content: "hello"}},
+		// Metadata and Thinking intentionally left nil.
+	}
+
+	ccReq, err := AnthropicMessagesToCommandCode(req)
+	if err != nil {
+		t.Fatalf("AnthropicMessagesToCommandCode() error = %v", err)
+	}
+
+	// The any fields must be truly nil so omitempty takes effect.
+	if ccReq.Params.Metadata != nil {
+		t.Fatalf("Metadata = %T (non-nil), want nil interface so omitempty omits it", ccReq.Params.Metadata)
+	}
+	if ccReq.Params.Thinking != nil {
+		t.Fatalf("Thinking = %T (non-nil), want nil interface so omitempty omits it", ccReq.Params.Thinking)
+	}
+
+	// Serialize and confirm the keys are absent — this is what the upstream
+	// API actually sees and what caused the HTTP 400 rejection.
+	data, err := json.Marshal(ccReq)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	jsonStr := string(data)
+	if strings.Contains(jsonStr, `"metadata"`) {
+		t.Fatalf("serialized JSON unexpectedly contains metadata key:\n%s", jsonStr)
+	}
+	if strings.Contains(jsonStr, `"thinking"`) {
+		t.Fatalf("serialized JSON unexpectedly contains thinking key:\n%s", jsonStr)
 	}
 }
