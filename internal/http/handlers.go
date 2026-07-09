@@ -731,8 +731,9 @@ func commandCodeStreamToOpenAIResponsesSSE(reader io.Reader, writer io.Writer, r
 	if err := writeResponseSSEEvent(writer, "response.created", createdEvent); err != nil {
 		return err
 	}
-
-	lines := streaming.ScanLines(reader)
+	done := make(chan struct{})
+	defer close(done)
+	lines := streaming.ScanLines(reader, done)
 	var text strings.Builder
 	usage := &protocol.Usage{}
 	outputIndex := 0
@@ -890,7 +891,9 @@ func writeResponseSSEEvent(writer io.Writer, event string, data any) error {
 }
 
 func commandCodeStreamToAnthropicMessagesWithIdleTimeout(reader io.Reader, model string, messageID string, logger *logging.Logger, idleTimeout time.Duration) (*protocol.AnthropicResponse, error) {
-	lines := streaming.ScanLines(reader)
+	done := make(chan struct{})
+	defer close(done)
+	lines := streaming.ScanLines(reader, done)
 	content, finishReason, usage, err := collectCommandCodeAnthropicContent(lines, logger, idleTimeout)
 	if err != nil {
 		return nil, err
@@ -999,7 +1002,9 @@ func collectCommandCodeAnthropicContent(lines <-chan streaming.StreamLine, logge
 }
 
 func commandCodeStreamToOpenAIWithIdleTimeout(reader io.Reader, model string, completionID string, created int64, logger *logging.Logger, idleTimeout time.Duration) (*protocol.OpenAIResponse, error) {
-	lines := streaming.ScanLines(reader)
+	done := make(chan struct{})
+	defer close(done)
+	lines := streaming.ScanLines(reader, done)
 	var content strings.Builder
 	var reasoningContent strings.Builder
 	finishReason := "stop"

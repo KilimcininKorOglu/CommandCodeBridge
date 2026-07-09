@@ -333,7 +333,9 @@ func (t *OpenAITranslator) TranslateStream(reader io.Reader, writer io.Writer) e
 
 // TranslateStreamWithIdleTimeout translates a stream and fails when no line arrives before idleTimeout.
 func (t *OpenAITranslator) TranslateStreamWithIdleTimeout(reader io.Reader, writer io.Writer, idleTimeout time.Duration) error {
-	lines := ScanLines(reader)
+	done := make(chan struct{})
+	defer close(done)
+	lines := ScanLines(reader, done)
 	for {
 		line, err := NextLine(lines, idleTimeout)
 		if err != nil {
@@ -363,17 +365,25 @@ type StreamLine struct {
 }
 
 // ScanLines reads lines asynchronously so callers can apply idle timeouts.
-func ScanLines(reader io.Reader) <-chan StreamLine {
+func ScanLines(reader io.Reader, done <-chan struct{}) <-chan StreamLine {
 	lines := make(chan StreamLine)
 	go func() {
 		defer close(lines)
 		scanner := bufio.NewScanner(reader)
 		scanner.Buffer(make([]byte, 64*1024), maxStreamLineSize)
 		for scanner.Scan() {
-			lines <- StreamLine{Line: scanner.Text()}
+			select {
+			case lines <- StreamLine{Line: scanner.Text()}:
+			case <-done:
+				return
+			}
 		}
 		if err := scanner.Err(); err != nil {
-			lines <- StreamLine{Err: err}
+			select {
+			case lines <- StreamLine{Err: err}:
+			case <-done:
+				return
+			}
 		}
 	}()
 	return lines

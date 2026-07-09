@@ -45,7 +45,9 @@ func (t *AnthropicTranslator) Translate(reader io.Reader, writer io.Writer) erro
 
 // TranslateWithIdleTimeout translates a stream and fails when no line arrives before idleTimeout.
 func (t *AnthropicTranslator) TranslateWithIdleTimeout(reader io.Reader, writer io.Writer, idleTimeout time.Duration) error {
-	lines := ScanLines(reader)
+	done := make(chan struct{})
+	defer close(done)
+	lines := ScanLines(reader, done)
 	for {
 		line, err := NextLine(lines, idleTimeout)
 		if err != nil {

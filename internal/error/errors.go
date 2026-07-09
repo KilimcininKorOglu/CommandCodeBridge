@@ -1,6 +1,9 @@
 package error
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // ErrorType represents the type of API error
 type ErrorType string
@@ -84,7 +87,14 @@ func MapStatus(status int, body string) *APIError {
 
 	message := fmt.Sprintf("CommandCode API error (%d)", status)
 	if body != "" {
-		message = fmt.Sprintf("CommandCode API error (%d): %s", status, body)
+		truncatedBody := body
+		if len(truncatedBody) > 500 {
+			truncatedBody = truncatedBody[:500] + "..."
+		}
+		// Sanitize any control characters/newlines to prevent log injection
+		truncatedBody = strings.ReplaceAll(truncatedBody, "\n", " ")
+		truncatedBody = strings.ReplaceAll(truncatedBody, "\r", " ")
+		message = fmt.Sprintf("CommandCode API error (%d): %s", status, truncatedBody)
 	}
 	return NewAPIError(errorType, message).WithCode(code)
 }
