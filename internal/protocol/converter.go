@@ -196,6 +196,17 @@ func AnthropicMessagesToCommandCode(req *AnthropicRequest) (*CommandCodeRequest,
 		}
 	}
 
+	// Guard against nil typed pointers becoming non-nil any interfaces,
+	// which would serialize as JSON null instead of being omitted.
+	var ccMetadata any
+	if req.Metadata != nil {
+		ccMetadata = req.Metadata
+	}
+	var ccThinking any
+	if req.Thinking != nil {
+		ccThinking = req.Thinking
+	}
+
 	workingDir, _ := config.GetWorkingDir()
 	dateStr := config.GetDateStr()
 	env := config.GetEnvironment()
@@ -226,9 +237,9 @@ func AnthropicMessagesToCommandCode(req *AnthropicRequest) (*CommandCodeRequest,
 			Temperature:       req.Temperature,
 			TopP:              req.TopP,
 			StopSequences:     req.StopSequences,
-			Metadata:          req.Metadata,
+			Metadata:          ccMetadata,
 			ReasoningEffort:   reasoningEffort,
-			Thinking:          req.Thinking,
+			Thinking:          ccThinking,
 			ContextManagement: req.ContextManagement,
 			OutputConfig:      req.OutputConfig,
 			Tools:             ccTools,
