@@ -5,8 +5,8 @@ services:
     build: .
     container_name: commandcode-bridge-proxy
     ports:
-      - "3050:3000"
+      - "3050:3050"
     volumes:
-      - ./data/config.json:/app/config.json
-      - ./data/logs:/app/data/logs
+      - ./data/config.json:/app/config.json:Z
+      - ./data/logs:/app/data/logs:Z
     restart: unless-stopped
