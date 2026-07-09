@@ -125,13 +125,21 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 				return
 			}
 			consecutiveTimeouts.Store(0)
-			_, outputTokens, _ := translator.GetUsage()
+			inputTokens, outputTokens, cachedTokens := translator.GetUsage()
 			if outputTokens == 0 {
 				cancel()
 				deps.Logger.Warn("Zero output tokens from upstream (OpenAI streaming)", nil)
 				sendStreamZeroOutput(w, streamWriter)
 				return
 			}
+			deps.Logger.Info("Token usage", map[string]any{
+				"endpoint":      "openai/chat/completions",
+				"stream":        true,
+				"model":         openaiReq.Model,
+				"input_tokens":  inputTokens,
+				"output_tokens": outputTokens,
+				"cached_tokens": cachedTokens,
+			})
 			streamWriter.WriteDone()
 			return
 		}
@@ -167,6 +175,16 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 			return
 		}
 
+		if openaiResp.Usage != nil {
+			deps.Logger.Info("Token usage", map[string]any{
+				"endpoint":      "openai/chat/completions",
+				"stream":        false,
+				"model":         openaiReq.Model,
+				"input_tokens":  openaiResp.Usage.InputTokens,
+				"output_tokens": openaiResp.Usage.OutputTokens,
+				"cached_tokens": openaiResp.Usage.CachedInputTokens,
+			})
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(openaiResp)
 	}
@@ -300,8 +318,18 @@ func handleCommandCodeResponsesRequest(w http.ResponseWriter, r *http.Request, d
 	} else {
 		responseObject = protocol.BuildOpenAIResponseObject(protocol.ResponseID("resp"), model, time.Now().Unix(), fmt.Sprint(message.Content), message.ToolCalls, openaiResp.Usage)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(responseObject)
+		if openaiResp.Usage != nil {
+			deps.Logger.Info("Token usage", map[string]any{
+				"endpoint":      "openai/responses",
+				"stream":        false,
+				"model":         model,
+				"input_tokens":  openaiResp.Usage.InputTokens,
+				"output_tokens": openaiResp.Usage.OutputTokens,
+				"cached_tokens": openaiResp.Usage.CachedInputTokens,
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(responseObject)
 }
 
 // HandleMessages handles Anthropic messages endpoint
@@ -400,12 +428,21 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 				return
 			}
 			consecutiveTimeouts.Store(0)
-			if translator.OutputTokens() == 0 {
+			inputTokens, outputTokens, cachedTokens := translator.GetUsage()
+			if outputTokens == 0 {
 				cancel()
 				deps.Logger.Warn("Zero output tokens from upstream (Anthropic streaming)", nil)
 				sendStreamZeroOutput(w, streamWriter)
 				return
 			}
+			deps.Logger.Info("Token usage", map[string]any{
+				"endpoint":      "anthropic/messages",
+				"stream":        true,
+				"model":         anthropicReq.Model,
+				"input_tokens":  inputTokens,
+				"output_tokens": outputTokens,
+				"cached_tokens": cachedTokens,
+			})
 			streamWriter.WriteDone()
 			return
 		}
@@ -441,6 +478,16 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 			return
 		}
 
+		if anthropicResp.Usage != nil {
+			deps.Logger.Info("Token usage", map[string]any{
+				"endpoint":      "anthropic/messages",
+				"stream":        false,
+				"model":         anthropicReq.Model,
+				"input_tokens":  anthropicResp.Usage.InputTokens,
+				"output_tokens": anthropicResp.Usage.OutputTokens,
+				"cached_tokens": anthropicResp.Usage.CacheReadInputTokens,
+			})
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(anthropicResp)
 	}
@@ -574,7 +621,14 @@ func (w *delayedSSEWriter) Write(p []byte) (int, error) {
 		w.writer.WriteHeader(http.StatusOK)
 		w.started = true
 	}
-	return w.writer.Write(p)
+	n, err := w.writer.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if flusher, ok := w.writer.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return n, nil
 }
 
 func (w *delayedSSEWriter) Started() bool {
@@ -807,6 +861,16 @@ func commandCodeStreamToOpenAIResponsesSSE(reader io.Reader, writer io.Writer, r
 		return err
 	}
 	completed := protocol.BuildOpenAIResponseObject(responseID, model, created, text.String(), nil, usage)
+	if logger != nil {
+		logger.Info("Token usage", map[string]any{
+			"endpoint":      "openai/responses",
+			"stream":        true,
+			"model":         model,
+			"input_tokens":  usage.InputTokens,
+			"output_tokens": usage.OutputTokens,
+			"cached_tokens": usage.CachedInputTokens,
+		})
+	}
 	return writeResponseSSEEvent(writer, "response.completed", map[string]any{
 		"type":     "response.completed",
 		"response": completed,

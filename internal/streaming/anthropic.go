@@ -87,6 +87,11 @@ func (t *AnthropicTranslator) OutputTokens() int {
 	return t.outputTokens
 }
 
+// GetUsage returns the tracked usage statistics
+func (t *AnthropicTranslator) GetUsage() (int, int, int) {
+	return t.inputTokens, t.outputTokens, t.cachedTokens
+}
+
 func (t *AnthropicTranslator) ParseLine(line string) ([]SSEEvent, error) {
 	if line == "" {
 		return nil, nil

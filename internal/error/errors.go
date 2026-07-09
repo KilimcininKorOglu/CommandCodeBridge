@@ -83,6 +83,9 @@ func MapStatus(status int, body string) *APIError {
 	}
 
 	message := fmt.Sprintf("CommandCode API error (%d)", status)
+	if body != "" {
+		message = fmt.Sprintf("CommandCode API error (%d): %s", status, body)
+	}
 	return NewAPIError(errorType, message).WithCode(code)
 }
 
