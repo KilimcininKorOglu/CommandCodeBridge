@@ -54,12 +54,20 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Build settings JSON that overrides the global settings.json env block.
-# The proxy accepts the token via x-api-key (Anthropic SDK convention).
+# --settings MERGES with the global config, so we must explicitly override
+# every env var that interferes:
+#   - ANTHROPIC_AUTH_TOKEN: global sets "dummy"; interactive (cli) mode uses
+#     this for auth, so it must be the real proxy token.
+#   - ANTHROPIC_CUSTOM_HEADERS: global injects Cloudflare gateway headers;
+#     cleared so they don't leak to the local proxy.
+#   - ANTHROPIC_BASE_URL: global points at Cloudflare gateway.
 SETTINGS=$(cat <<EOF
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:3050",
     "ANTHROPIC_API_KEY": "${PROXY_TOKEN}",
+    "ANTHROPIC_AUTH_TOKEN": "${PROXY_TOKEN}",
+    "ANTHROPIC_CUSTOM_HEADERS": "",
     "ANTHROPIC_MODEL": "${MODEL}",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${HAIKU}",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "${MODEL}",
