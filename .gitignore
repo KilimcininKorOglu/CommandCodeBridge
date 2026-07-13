@@ -4,3 +4,4 @@ logs/
 config.json
 data/config.json
 bin/*
+.wrongstack/
