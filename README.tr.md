@@ -9,7 +9,9 @@ Yerel client isteklerini kabul eder, OpenAI veya Anthropic payloadlarını Comma
 ## Özellikler
 
 - OpenAI uyumlu `POST /v1/chat/completions` endpointi.
+- OpenAI Responses `POST /v1/responses` ve `POST /v1/responses/compact` endpointleri.
 - Anthropic uyumlu `POST /v1/messages` endpointi.
+- Upstream tarafına iletilen Anthropic token counting `POST /v1/messages/count_tokens` endpointi.
 - Provider API model listesine dayalı OpenAI uyumlu `GET /v1/models` endpointi.
 - Streaming ve non-streaming response desteği.
 - OpenAI ve Anthropic response biçimleri için tool calling desteği.
@@ -175,10 +177,13 @@ CommandCode özel environment variable değerleri için `COMMANDCODE_` prefixini
 
 | Endpoint                    | Auth  | Açıklama                                 |
 |-----------------------------|-------|------------------------------------------|
-| `GET /health`               | Hayır | Health check.                            |
-| `GET /v1/models`            | Evet  | OpenAI uyumlu model list data döndürür.  |
-| `POST /v1/chat/completions` | Evet  | OpenAI Chat Completions uyumlu endpoint. |
-| `POST /v1/messages`         | Evet  | Anthropic Messages uyumlu endpoint.      |
+| `GET /health`                  | Hayır | Health check.                              |
+| `GET /v1/models`               | Evet  | OpenAI uyumlu model list data döndürür.    |
+| `POST /v1/chat/completions`    | Evet  | OpenAI Chat Completions uyumlu endpoint.   |
+| `POST /v1/responses`           | Evet  | OpenAI Responses uyumlu endpoint.          |
+| `POST /v1/responses/compact`   | Evet  | OpenAI Responses konuşma sıkıştırması.     |
+| `POST /v1/messages`            | Evet  | Anthropic Messages uyumlu endpoint.        |
+| `POST /v1/messages/count_tokens` | Evet | Upstream'e iletilen Anthropic token counting. |
 
 Protected route değerleri upstream tarafına forward edilmeden önce invalid authentication formatlarını reddeder.
 
@@ -246,6 +251,35 @@ curl http://127.0.0.1:3050/v1/messages \
   }'
 ```
 
+## OpenAI Responses Kullanımı
+
+Non-streaming örneği:
+
+```bash
+curl http://127.0.0.1:3050/v1/responses \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer test' \
+  -d '{
+    "model": "deepseek/deepseek-v4-flash",
+    "input": "Write a short greeting."
+  }'
+```
+
+Streaming, Responses eventlerini (`response.created`, `response.output_text.delta`, `response.completed`) ve son bir `data: [DONE]` satırını yayar:
+
+```bash
+curl http://127.0.0.1:3050/v1/responses \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer test' \
+  -d '{
+    "model": "deepseek/deepseek-v4-flash",
+    "stream": true,
+    "input": "Write a short greeting."
+  }'
+```
+
+`POST /v1/responses/compact` endpointi aynı `model` ve `input` alanlarını kabul eder ve sıkıştırılmış bir konuşma context değeri döndürür.
+
 ## Tool Calling
 
 İki uyumlu endpoint de streaming ve non-streaming response değerlerinde tool calling destekler.
@@ -301,10 +335,10 @@ Image input desteği seçilen upstream modele bağlıdır.
 | Compose project name | `commandcode-bridge`                  |
 | Service              | `proxy`                               |
 | Container name       | `commandcode-bridge-proxy`            |
-| Host port            | `3050`                                |
-| Container port       | `3000`                                |
-| Runtime config mount | `./data/config.json:/app/config.json` |
-| Runtime logs mount   | `./data/logs:/app/data/logs`          |
+| Host port            | `3050`                                  |
+| Container port       | `3050`                                  |
+| Runtime config mount | `./data/config.json:/app/config.json:Z` |
+| Runtime logs mount   | `./data/logs:/app/data/logs:Z`          |
 
 Servisi başlatın:
 

@@ -9,7 +9,9 @@ It accepts local client requests, converts OpenAI or Anthropic payloads into the
 ## Features
 
 - OpenAI-compatible `POST /v1/chat/completions` endpoint.
+- OpenAI Responses `POST /v1/responses` and `POST /v1/responses/compact` endpoints.
 - Anthropic-compatible `POST /v1/messages` endpoint.
+- Anthropic token counting `POST /v1/messages/count_tokens` endpoint forwarded upstream.
 - OpenAI-compatible `GET /v1/models` endpoint backed by the Provider API model list.
 - Streaming and non-streaming response handling.
 - Tool calling support for OpenAI and Anthropic responses.
@@ -175,10 +177,13 @@ Use the `COMMANDCODE_` prefix for CommandCode-specific environment variables.
 
 | Endpoint                    | Auth | Description                                  |
 |-----------------------------|------|----------------------------------------------|
-| `GET /health`               | No   | Health check.                                |
-| `GET /v1/models`            | Yes  | Returns OpenAI-compatible model list data.   |
-| `POST /v1/chat/completions` | Yes  | OpenAI Chat Completions compatible endpoint. |
-| `POST /v1/messages`         | Yes  | Anthropic Messages compatible endpoint.      |
+| `GET /health`                  | No   | Health check.                                    |
+| `GET /v1/models`               | Yes  | Returns OpenAI-compatible model list data.       |
+| `POST /v1/chat/completions`    | Yes  | OpenAI Chat Completions compatible endpoint.     |
+| `POST /v1/responses`           | Yes  | OpenAI Responses compatible endpoint.            |
+| `POST /v1/responses/compact`   | Yes  | OpenAI Responses conversation compaction.        |
+| `POST /v1/messages`            | Yes  | Anthropic Messages compatible endpoint.          |
+| `POST /v1/messages/count_tokens` | Yes | Anthropic token counting forwarded upstream.    |
 
 Protected routes reject invalid authentication before forwarding upstream.
 
@@ -246,6 +251,35 @@ curl http://127.0.0.1:3050/v1/messages \
   }'
 ```
 
+## OpenAI Responses Usage
+
+Non-streaming example:
+
+```bash
+curl http://127.0.0.1:3050/v1/responses \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer test' \
+  -d '{
+    "model": "deepseek/deepseek-v4-flash",
+    "input": "Write a short greeting."
+  }'
+```
+
+Streaming emits Responses events (`response.created`, `response.output_text.delta`, `response.completed`) and a final `data: [DONE]` line:
+
+```bash
+curl http://127.0.0.1:3050/v1/responses \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer test' \
+  -d '{
+    "model": "deepseek/deepseek-v4-flash",
+    "stream": true,
+    "input": "Write a short greeting."
+  }'
+```
+
+The `POST /v1/responses/compact` endpoint accepts the same `model` and `input` fields and returns a compacted conversation context.
+
 ## Tool Calling
 
 Both compatible endpoints support tool calling in streaming and non-streaming responses.
@@ -301,10 +335,10 @@ Model support for image inputs depends on the selected upstream model.
 | Compose project name | `commandcode-bridge`                  |
 | Service              | `proxy`                               |
 | Container name       | `commandcode-bridge-proxy`            |
-| Host port            | `3050`                                |
-| Container port       | `3000`                                |
-| Runtime config mount | `./data/config.json:/app/config.json` |
-| Runtime logs mount   | `./data/logs:/app/data/logs`          |
+| Host port            | `3050`                                  |
+| Container port       | `3050`                                  |
+| Runtime config mount | `./data/config.json:/app/config.json:Z` |
+| Runtime logs mount   | `./data/logs:/app/data/logs:Z`          |
 
 Start the service:
 
@@ -385,6 +419,6 @@ The service accepts user-controlled payloads and forwards them upstream. Preserv
 
 When adding SQL, shell execution, template rendering, file access, or new outbound HTTP behavior, evaluate the related OWASP Top 10 risks before implementation.
 
-## Lisans
+## License
 
 Research only.
