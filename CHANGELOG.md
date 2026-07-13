@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.2.0] - 2026-07-13
+
+### Added
+- Add streaming flusher, token usage logging, and Anthropic cache mapping.
+- Add --model/--haiku flag support to claude-proxy.sh.
+
+### Changed
+- Add nil-metadata regression test for Anthropic converter.
+- Gitignore .wrongstack/ tooling directory.
+
+### Fixed
+- Address Gemini Code Assist review feedback (nil check, goroutine leak, and log safety).
+- Prevent nil metadata/thinking from serializing as JSON null.
+- Fail-fast on unreadable config instead of silently using defaults.
+- Correct Docker Compose port mapping and SELinux volume labels.
+- Set ANTHROPIC_AUTH_TOKEN for interactive mode auth.
+
 ## [1.1.4] - 2026-07-08
 
 ### Added
