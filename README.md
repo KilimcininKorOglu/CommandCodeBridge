@@ -18,8 +18,8 @@ It accepts local client requests, converts OpenAI or Anthropic payloads into the
 - Anthropic URL and base64 image source conversion to OpenAI `image_url` blocks.
 - Per-key session management with request header session reuse.
 - Machine fingerprint and CLI compatibility headers for upstream requests.
-- Optional local proxy authentication with `proxy_token`.
-- Optional fallback upstream credential through `cc_apiKey`.
+- Local proxy authentication for client access with `proxy_token`.
+- Upstream CommandCode authentication with `cc_apiKey`, always read from config.
 
 ## Requirements
 
@@ -124,8 +124,8 @@ Example configuration:
 | `port`                   | Local listen port. Overridden by `PORT`.                                                                             |
 | `host`                   | Local listen address. Overridden by `HOST`.                                                                          |
 | `apiBase`                | Upstream CommandCode API base URL. Overridden by `COMMANDCODE_API_BASE`.                                             |
-| `cc_apiKey`              | Optional fallback upstream CommandCode credential. Must contain a `user_` key when used.                             |
-| `proxy_token`            | Optional local proxy authentication token for clients. Overridden by `COMMANDCODE_PROXY_TOKEN`.                      |
+| `cc_apiKey`              | Upstream CommandCode credential, always read from config. Must contain a `user_` key.                                |
+| `proxy_token`            | Local proxy authentication token for clients. Overridden by `COMMANDCODE_PROXY_TOKEN`.                               |
 | `projectSlug`            | Optional explicit upstream project slug. Empty value uses a session-derived fake slug. Overridden by `PROJECT_SLUG`. |
 | `logFile`                | Optional log file path. Overridden by `LOG_FILE`.                                                                    |
 | `logLevel`               | Log level. Overridden by `LOG_LEVEL`.                                                                                |
@@ -154,9 +154,9 @@ or:
 X-Proxy-Token: <proxy_token>
 ```
 
-The proxy then uses `cc_apiKey` from config for upstream CommandCode requests.
+The proxy always uses `cc_apiKey` from config for upstream CommandCode requests. `cc_apiKey` must contain a `user_[a-zA-Z0-9_-]+` key; `sk-...` keys are not valid CommandCode credentials.
 
-When `proxy_token` is not configured, the proxy extracts the first `user_[a-zA-Z0-9_-]+` key from the incoming bearer token and rejects requests that do not contain a `user_` key. `sk-...` keys are not valid CommandCode credentials.
+When `proxy_token` is not configured, the proxy does not enforce local client authentication, but it still requires `cc_apiKey` in config to authenticate upstream.
 
 ## Environment Variables
 

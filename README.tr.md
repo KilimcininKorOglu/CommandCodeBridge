@@ -18,8 +18,8 @@ Yerel client isteklerini kabul eder, OpenAI veya Anthropic payloadlarını Comma
 - Anthropic URL ve base64 image source değerlerini OpenAI `image_url` blocklarına dönüştürme desteği.
 - Request header ile session reuse destekleyen per-key session management.
 - Upstream requestler için machine fingerprint ve CLI compatibility headerları.
-- `proxy_token` ile isteğe bağlı local proxy authentication.
-- `cc_apiKey` ile isteğe bağlı fallback upstream credential.
+- Client erişimi için `proxy_token` ile local proxy authentication.
+- Her zaman config'den okunan `cc_apiKey` ile upstream CommandCode authentication.
 
 ## Gereksinimler
 
@@ -124,8 +124,8 @@ Proxy varsayılan olarak `config.json` dosyasını yükler ve ardından environm
 | `port`                   | Local listen port. `PORT` ile override edilir.                                                                                 |
 | `host`                   | Local listen address. `HOST` ile override edilir.                                                                              |
 | `apiBase`                | Upstream CommandCode API base URL. `COMMANDCODE_API_BASE` ile override edilir.                                                 |
-| `cc_apiKey`              | İsteğe bağlı fallback upstream CommandCode credential. Kullanıldığında `user_` key içermelidir.                                |
-| `proxy_token`            | Clientlar için isteğe bağlı local proxy authentication token. `COMMANDCODE_PROXY_TOKEN` ile override edilir.                   |
+| `cc_apiKey`              | Her zaman config'den okunan upstream CommandCode credential. `user_` key içermelidir.                                          |
+| `proxy_token`            | Clientlar için local proxy authentication token. `COMMANDCODE_PROXY_TOKEN` ile override edilir.                                |
 | `projectSlug`            | İsteğe bağlı explicit upstream project slug. Boş değer session-derived fake slug kullanır. `PROJECT_SLUG` ile override edilir. |
 | `logFile`                | İsteğe bağlı log file path. `LOG_FILE` ile override edilir.                                                                    |
 | `logLevel`               | Log level. `LOG_LEVEL` ile override edilir.                                                                                    |
@@ -154,9 +154,9 @@ veya:
 X-Proxy-Token: <proxy_token>
 ```
 
-Proxy ardından upstream CommandCode requestleri için config dosyasındaki `cc_apiKey` değerini kullanır.
+Proxy upstream CommandCode requestleri için her zaman config dosyasındaki `cc_apiKey` değerini kullanır. `cc_apiKey` bir `user_[a-zA-Z0-9_-]+` key içermelidir; `sk-...` keyleri geçerli CommandCode credential değildir.
 
-`proxy_token` yapılandırılmamışsa proxy incoming bearer token içinden ilk `user_[a-zA-Z0-9_-]+` key değerini çıkarır ve `user_` key içermeyen requestleri reddeder. `sk-...` keyleri geçerli CommandCode credential değildir.
+`proxy_token` yapılandırılmamışsa proxy local client authentication'ı zorunlu kılmaz, ancak upstream authentication için config'de `cc_apiKey` yine de gereklidir.
 
 ## Environment Variables
 
