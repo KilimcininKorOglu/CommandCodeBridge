@@ -13,20 +13,28 @@ import (
 	"github.com/kilimcininkoroglu/commandcode-bridge/internal/logging"
 )
 
-// CORS middleware adds CORS headers to all responses
-func CORS(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Proxy-Token, x-api-key, anthropic-version, anthropic-beta")
+// CORS middleware adds CORS headers to all responses. When allowedOrigin is
+// empty, defaults to "*" (safe for localhost-only deployments). For network
+// deployments, set a specific origin to prevent cross-site request abuse.
+func CORS(allowedOrigin string) func(http.Handler) http.Handler {
+	origin := allowedOrigin
+	if origin == "" {
+		origin = "*"
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Proxy-Token, x-api-key, anthropic-version, anthropic-beta")
 
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
+			if r.Method == "OPTIONS" {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 
-		next.ServeHTTP(w, r)
-	})
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 var ccAPIKeyPattern = regexp.MustCompile(`user_[a-zA-Z0-9_-]+`)

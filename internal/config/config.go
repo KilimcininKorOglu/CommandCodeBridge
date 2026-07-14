@@ -20,7 +20,7 @@ type Config struct {
 	LogFile              string        `json:"logFile"`
 	LogLevel             string        `json:"logLevel"`
 	UseProviderModels    bool          `json:"useProviderModels"`
-	ModelRefreshInterval time.Duration `json:"modelRefreshIntervalMs"`
+	ModelRefreshInterval time.Duration `json:"modelRefreshInterval,omitempty"`
 	Fingerprint          *Fingerprint  `json:"fingerprint,omitempty"`
 }
 
