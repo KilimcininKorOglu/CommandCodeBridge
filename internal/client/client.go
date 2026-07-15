@@ -28,9 +28,18 @@ type Client struct {
 
 // New creates a new CommandCode API client
 func New(apiBase string, projectSlug string, logger *logging.Logger) *Client {
+	// Use a custom transport with connection pooling tuned for both
+	// short API calls and long-running streaming responses. The overall
+	// timeout is handled per-request via context, not the http.Client,
+	// so streaming responses are not killed prematurely.
+	transport := &http.Transport{
+		MaxIdleConns:        20,
+		MaxIdleConnsPerHost: 10,
+		IdleConnTimeout:     90 * time.Second,
+	}
 	return &Client{
 		httpClient: &http.Client{
-			Timeout: 90 * time.Second,
+			Transport: transport,
 		},
 		apiBase:     apiBase,
 		projectSlug: projectSlug,
@@ -39,7 +48,7 @@ func New(apiBase string, projectSlug string, logger *logging.Logger) *Client {
 }
 
 // Forward forwards a request to the CommandCode API
-func (c *Client) Forward(ctx context.Context, body []byte, cc_apiKey string, headers http.Header, sessionID string, fp *config.Fingerprint) (*http.Response, error) {
+func (c *Client) Forward(ctx context.Context, body []byte, ccAPIKey string, headers http.Header, sessionID string, fp *config.Fingerprint) (*http.Response, error) {
 	url := fmt.Sprintf("%s/alpha/generate", c.apiBase)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
@@ -51,7 +60,7 @@ func (c *Client) Forward(ctx context.Context, body []byte, cc_apiKey string, hea
 	}
 
 	// Set headers
-	req.Header.Set("Authorization", "Bearer "+cc_apiKey)
+	req.Header.Set("Authorization", "Bearer "+ccAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-cli-environment", "production")
 	req.Header.Set("x-command-code-version", version.GetCommandCodeVersion())
@@ -80,9 +89,10 @@ func (c *Client) Forward(ctx context.Context, body []byte, cc_apiKey string, hea
 		req.Header.Set("x-collector-version", fmt.Sprintf("%d", fp.Components.CollectorVersion))
 	}
 
-	// Copy safe custom headers without leaking local proxy credentials upstream.
+	// Copy only safe client headers upstream — use an allowlist rather than a
+	// blocklist to prevent accidental credential leakage.
 	for key, values := range headers {
-		if isForwardBlockedHeader(key) {
+		if !isForwardAllowedHeader(key) {
 			continue
 		}
 		for _, value := range values {
@@ -110,7 +120,7 @@ func (c *Client) Forward(ctx context.Context, body []byte, cc_apiKey string, hea
 }
 
 // ForwardAnthropicCountTokens forwards an Anthropic token count request to the upstream API.
-func (c *Client) ForwardAnthropicCountTokens(ctx context.Context, body []byte, cc_apiKey string, headers http.Header, sessionID string, fp *config.Fingerprint, rawQuery string) (*http.Response, error) {
+func (c *Client) ForwardAnthropicCountTokens(ctx context.Context, body []byte, ccAPIKey string, headers http.Header, sessionID string, fp *config.Fingerprint, rawQuery string) (*http.Response, error) {
 	url := fmt.Sprintf("%s/v1/messages/count_tokens", c.apiBase)
 	if rawQuery != "" {
 		url += "?" + rawQuery
@@ -124,7 +134,7 @@ func (c *Client) ForwardAnthropicCountTokens(ctx context.Context, body []byte, c
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+cc_apiKey)
+	req.Header.Set("Authorization", "Bearer "+ccAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-cli-environment", "production")
 	req.Header.Set("x-command-code-version", version.GetCommandCodeVersion())
@@ -153,7 +163,7 @@ func (c *Client) ForwardAnthropicCountTokens(ctx context.Context, body []byte, c
 	}
 
 	for key, values := range headers {
-		if isForwardBlockedHeader(key) {
+		if !isForwardAllowedHeader(key) {
 			continue
 		}
 		for _, value := range values {
@@ -193,10 +203,17 @@ func (c *Client) projectSlugForSession(sessionID string) string {
 	return ProjectSlug(c.projectSlug, sessionID)
 }
 
-// isForwardBlockedHeader reports whether an inbound header must stay local to the proxy.
-func isForwardBlockedHeader(key string) bool {
-	switch strings.ToLower(key) {
-	case "authorization", "x-proxy-token", "x-cli-environment", "x-command-code-version", "x-project-slug", "x-session-id", "x-co-flag", "x-taste-learning", "traceparent", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host", "content-length":
+// isForwardAllowedHeader reports whether an inbound header is safe to forward
+// upstream. Uses an allowlist of anthropic/SDK headers — everything else
+// (including Authorization, proxy tokens, hop-by-hop headers) is blocked.
+func isForwardAllowedHeader(key string) bool {
+	lk := strings.ToLower(key)
+	// Allow Anthropic SDK headers that the upstream API expects.
+	if strings.HasPrefix(lk, "anthropic-") {
+		return true
+	}
+	switch lk {
+	case "accept", "accept-encoding", "user-agent":
 		return true
 	default:
 		return false
@@ -217,7 +234,7 @@ func generateTraceparent() string {
 }
 
 // FetchModels fetches the list of available models from the Provider API
-func (c *Client) FetchModels(ctx context.Context, cc_apiKey string) ([]Model, error) {
+func (c *Client) FetchModels(ctx context.Context, ccAPIKey string) ([]Model, error) {
 	url := fmt.Sprintf("%s/v1/models", c.apiBase)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -228,7 +245,7 @@ func (c *Client) FetchModels(ctx context.Context, cc_apiKey string) ([]Model, er
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+cc_apiKey)
+	req.Header.Set("Authorization", "Bearer "+ccAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -264,7 +281,7 @@ func (c *Client) FetchModels(ctx context.Context, cc_apiKey string) ([]Model, er
 }
 
 // SendFingerprint sends a fingerprint to the CommandCode API
-func (c *Client) SendFingerprint(ctx context.Context, fp *fingerprint.Fingerprint, cc_apiKey string) error {
+func (c *Client) SendFingerprint(ctx context.Context, fp *fingerprint.Fingerprint, ccAPIKey string) error {
 	url := fmt.Sprintf("%s/v1/fingerprint", c.apiBase)
 
 	body, err := json.Marshal(fp)
@@ -283,7 +300,7 @@ func (c *Client) SendFingerprint(ctx context.Context, fp *fingerprint.Fingerprin
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+cc_apiKey)
+	req.Header.Set("Authorization", "Bearer "+ccAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
@@ -307,7 +324,7 @@ func (c *Client) SendFingerprint(ctx context.Context, fp *fingerprint.Fingerprin
 }
 
 // SendLifecycleEvent sends a lifecycle event to the CommandCode API
-func (c *Client) SendLifecycleEvent(ctx context.Context, cc_apiKey string, eventType string) error {
+func (c *Client) SendLifecycleEvent(ctx context.Context, ccAPIKey string, eventType string) error {
 	url := fmt.Sprintf("%s/v1/lifecycle", c.apiBase)
 
 	event := map[string]string{
@@ -330,7 +347,7 @@ func (c *Client) SendLifecycleEvent(ctx context.Context, cc_apiKey string, event
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+cc_apiKey)
+	req.Header.Set("Authorization", "Bearer "+ccAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)

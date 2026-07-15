@@ -34,7 +34,7 @@ func (s *Server) Start() error {
 	r := chi.NewRouter()
 
 	// Apply middleware
-	r.Use(CORS)
+	r.Use(CORS(""))                           // empty = allow all origins (localhost-only default)
 	r.Use(RequestSizeLimit(10 * 1024 * 1024)) // 10MB limit
 	r.Use(RequestTimeout(90 * time.Second))
 	r.Use(LoggingMiddleware(s.logger))

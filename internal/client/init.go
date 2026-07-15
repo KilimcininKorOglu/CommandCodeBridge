@@ -43,7 +43,7 @@ func NewInitManager(apiBase string, projectSlug string, logger *logging.Logger) 
 }
 
 // EnsureInitialized ensures initialization requests are sent if needed
-func (m *InitManager) EnsureInitialized(ctx context.Context, cc_apiKey string, fp *config.Fingerprint) error {
+func (m *InitManager) EnsureInitialized(ctx context.Context, ccAPIKey string, fp *config.Fingerprint) error {
 	m.mu.Lock()
 	now := time.Now()
 	if now.Before(m.nextInitAt) {
@@ -55,7 +55,7 @@ func (m *InitManager) EnsureInitialized(ctx context.Context, cc_apiKey string, f
 	headers := map[string]string{
 		"Content-Type":           "application/json",
 		"x-cli-environment":      "production",
-		"Authorization":          "Bearer " + cc_apiKey,
+		"Authorization":          "Bearer " + ccAPIKey,
 		"x-command-code-version": version.GetCommandCodeVersion(),
 	}
 

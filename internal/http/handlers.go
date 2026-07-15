@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,7 +31,30 @@ const (
 	timeoutRetryAfterSeconds       = 5
 )
 
-var consecutiveTimeouts atomic.Int64
+// sessionTimeouts tracks consecutive idle timeouts per session to provide
+// context-reduction hints without leaking state across different users.
+var sessionTimeouts sync.Map
+
+// incrementTimeout returns the new consecutive count for a session.
+func incrementTimeout(sessionID string) int64 {
+	var count int64
+	v, _ := sessionTimeouts.LoadOrStore(sessionID, &atomic.Int64{})
+	count = v.(*atomic.Int64).Add(1)
+	return count
+}
+
+// resetTimeout clears the consecutive timeout counter for a session.
+func resetTimeout(sessionID string) {
+	sessionTimeouts.Delete(sessionID)
+}
+
+// ccAPIKeyFromContext safely extracts the API key from request context.
+func ccAPIKeyFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value("ccAPIKey").(string); ok {
+		return v
+	}
+	return ""
+}
 
 // HandlerDependencies contains dependencies for HTTP handlers
 type HandlerDependencies struct {
@@ -46,7 +70,7 @@ type HandlerDependencies struct {
 // HandleChatCompletions handles OpenAI chat completions endpoint
 func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ccAPIKey := r.Context().Value("ccAPIKey").(string)
+		ccAPIKey := ccAPIKeyFromContext(r.Context())
 
 		// Ensure initialization (fingerprint/lifecycle events)
 		if err := deps.InitManager.EnsureInitialized(r.Context(), ccAPIKey, deps.Config.Fingerprint); err != nil {
@@ -121,10 +145,10 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 			translator := streaming.NewOpenAITranslator(openaiReq.Model, generateCompletionID(), time.Now().Unix())
 			streamWriter := newDelayedSSEWriter(w)
 			if err := translator.TranslateStreamWithIdleTimeout(resp.Body, streamWriter, streamIdleTimeout); err != nil {
-				handleStreamingError(w, streamWriter, deps.Logger, err)
+				handleStreamingError(w, streamWriter, deps.Logger, err, sessionID)
 				return
 			}
-			consecutiveTimeouts.Store(0)
+			resetTimeout(sessionID)
 			inputTokens, outputTokens, cachedTokens := translator.GetUsage()
 			if outputTokens == 0 {
 				cancel()
@@ -162,7 +186,7 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 			return
 		}
 
-		openaiResp, err := commandCodeStreamToOpenAIWithIdleTimeout(resp.Body, openaiReq.Model, generateCompletionID(), time.Now().Unix(), deps.Logger, nonStreamIdleTimeout)
+		openaiResp, err := commandCodeStreamToOpenAIWithIdleTimeout(resp.Body, openaiReq.Model, generateCompletionID(), time.Now().Unix(), deps.Logger, nonStreamIdleTimeout, sessionID)
 		if err != nil {
 			if apiErr, ok := err.(*apierror.APIError); ok {
 				sendError(w, apiErr)
@@ -193,7 +217,7 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 // HandleResponses handles OpenAI Responses endpoint.
 func HandleResponses(deps *HandlerDependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ccAPIKey := r.Context().Value("ccAPIKey").(string)
+		ccAPIKey := ccAPIKeyFromContext(r.Context())
 		if err := deps.InitManager.EnsureInitialized(r.Context(), ccAPIKey, deps.Config.Fingerprint); err != nil {
 			deps.Logger.Warn("Initialization failed", map[string]any{"error": err.Error()})
 		}
@@ -228,7 +252,7 @@ func HandleResponses(deps *HandlerDependencies) http.HandlerFunc {
 // HandleResponsesCompact handles OpenAI Responses compaction endpoint.
 func HandleResponsesCompact(deps *HandlerDependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ccAPIKey := r.Context().Value("ccAPIKey").(string)
+		ccAPIKey := ccAPIKeyFromContext(r.Context())
 		if err := deps.InitManager.EnsureInitialized(r.Context(), ccAPIKey, deps.Config.Fingerprint); err != nil {
 			deps.Logger.Warn("Initialization failed", map[string]any{"error": err.Error()})
 		}
@@ -280,10 +304,10 @@ func handleCommandCodeResponsesRequest(w http.ResponseWriter, r *http.Request, d
 		streamWriter := newDelayedSSEWriter(w)
 		responseID := protocol.ResponseID("resp")
 		if err := commandCodeStreamToOpenAIResponsesSSE(resp.Body, streamWriter, responseID, model, time.Now().Unix(), deps.Logger, streamIdleTimeout); err != nil {
-			handleStreamingError(w, streamWriter, deps.Logger, err)
+			handleStreamingError(w, streamWriter, deps.Logger, err, sessionID)
 			return
 		}
-		consecutiveTimeouts.Store(0)
+		resetTimeout(sessionID)
 		streamWriter.WriteDone()
 		return
 	}
@@ -300,7 +324,7 @@ func handleCommandCodeResponsesRequest(w http.ResponseWriter, r *http.Request, d
 		return
 	}
 
-	openaiResp, err := commandCodeStreamToOpenAIWithIdleTimeout(resp.Body, model, generateCompletionID(), time.Now().Unix(), deps.Logger, nonStreamIdleTimeout)
+	openaiResp, err := commandCodeStreamToOpenAIWithIdleTimeout(resp.Body, model, generateCompletionID(), time.Now().Unix(), deps.Logger, nonStreamIdleTimeout, sessionID)
 	if err != nil {
 		if apiErr, ok := err.(*apierror.APIError); ok {
 			sendError(w, apiErr)
@@ -312,30 +336,35 @@ func handleCommandCodeResponsesRequest(w http.ResponseWriter, r *http.Request, d
 	}
 
 	var responseObject *protocol.OpenAIResponseObject
+	if len(openaiResp.Choices) == 0 {
+		deps.Logger.Warn("Upstream returned zero choices", map[string]any{"model": model})
+		sendError(w, apierror.NewAPIError(apierror.ErrorTypeUpstream, "Upstream returned empty response").WithCode(http.StatusBadGateway))
+		return
+	}
 	message := openaiResp.Choices[0].Message
 	if compact {
 		responseObject = protocol.BuildOpenAICompactionObject(protocol.ResponseID("resp"), time.Now().Unix(), fmt.Sprint(message.Content), openaiResp.Usage)
 	} else {
 		responseObject = protocol.BuildOpenAIResponseObject(protocol.ResponseID("resp"), model, time.Now().Unix(), fmt.Sprint(message.Content), message.ToolCalls, openaiResp.Usage)
 	}
-		if openaiResp.Usage != nil {
-			deps.Logger.Info("Token usage", map[string]any{
-				"endpoint":      "openai/responses",
-				"stream":        false,
-				"model":         model,
-				"input_tokens":  openaiResp.Usage.InputTokens,
-				"output_tokens": openaiResp.Usage.OutputTokens,
-				"cached_tokens": openaiResp.Usage.CachedInputTokens,
-			})
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(responseObject)
+	if openaiResp.Usage != nil {
+		deps.Logger.Info("Token usage", map[string]any{
+			"endpoint":      "openai/responses",
+			"stream":        false,
+			"model":         model,
+			"input_tokens":  openaiResp.Usage.InputTokens,
+			"output_tokens": openaiResp.Usage.OutputTokens,
+			"cached_tokens": openaiResp.Usage.CachedInputTokens,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(responseObject)
 }
 
 // HandleMessages handles Anthropic messages endpoint
 func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ccAPIKey := r.Context().Value("ccAPIKey").(string)
+		ccAPIKey := ccAPIKeyFromContext(r.Context())
 
 		// Ensure initialization (fingerprint/lifecycle events)
 		if err := deps.InitManager.EnsureInitialized(r.Context(), ccAPIKey, deps.Config.Fingerprint); err != nil {
@@ -424,10 +453,10 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 			translator := streaming.NewAnthropicTranslator(anthropicReq.Model, generateMessageID())
 			streamWriter := newDelayedSSEWriter(w)
 			if err := translator.TranslateWithIdleTimeout(resp.Body, streamWriter, streamIdleTimeout); err != nil {
-				handleStreamingError(w, streamWriter, deps.Logger, err)
+				handleStreamingError(w, streamWriter, deps.Logger, err, sessionID)
 				return
 			}
-			consecutiveTimeouts.Store(0)
+			resetTimeout(sessionID)
 			inputTokens, outputTokens, cachedTokens := translator.GetUsage()
 			if outputTokens == 0 {
 				cancel()
@@ -465,7 +494,7 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 			return
 		}
 
-		anthropicResp, err := commandCodeStreamToAnthropicMessagesWithIdleTimeout(resp.Body, anthropicReq.Model, generateMessageID(), deps.Logger, nonStreamIdleTimeout)
+		anthropicResp, err := commandCodeStreamToAnthropicMessagesWithIdleTimeout(resp.Body, anthropicReq.Model, generateMessageID(), deps.Logger, nonStreamIdleTimeout, sessionID)
 		if err != nil {
 			if apiErr, ok := err.(*apierror.APIError); ok {
 				sendError(w, apiErr)
@@ -496,7 +525,7 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 // HandleMessagesCountTokens handles Anthropic token counting requests.
 func HandleMessagesCountTokens(deps *HandlerDependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ccAPIKey := r.Context().Value("ccAPIKey").(string)
+		ccAPIKey := ccAPIKeyFromContext(r.Context())
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			deps.Logger.Warn("Failed to read Anthropic token count request body", map[string]any{
@@ -678,12 +707,12 @@ func timeoutMessage(count int64) string {
 	return "Response timeout - request timed out"
 }
 
-func handleStreamingError(w http.ResponseWriter, streamWriter *delayedSSEWriter, logger *logging.Logger, err error) {
+func handleStreamingError(w http.ResponseWriter, streamWriter *delayedSSEWriter, logger *logging.Logger, err error, sessionID string) {
 	logger.Error("Streaming error", map[string]any{
 		"error": err.Error(),
 	})
 	if errors.Is(err, streaming.ErrStreamIdleTimeout) {
-		count := consecutiveTimeouts.Add(1)
+		count := incrementTimeout(sessionID)
 		logger.Warn("Stream idle timeout", map[string]any{
 			"consecutive": count,
 		})
@@ -723,7 +752,7 @@ func decodeRequestBody(body io.Reader, target any) *apierror.APIError {
 }
 
 func commandCodeStreamToOpenAI(reader io.Reader, model string, completionID string, created int64, logger *logging.Logger) (*protocol.OpenAIResponse, error) {
-	return commandCodeStreamToOpenAIWithIdleTimeout(reader, model, completionID, created, logger, 0)
+	return commandCodeStreamToOpenAIWithIdleTimeout(reader, model, completionID, created, logger, 0, "")
 }
 
 func commandCodeStreamToOpenAIResponsesSSE(reader io.Reader, writer io.Writer, responseID string, model string, created int64, logger *logging.Logger, idleTimeout time.Duration) error {
@@ -890,18 +919,18 @@ func writeResponseSSEEvent(writer io.Writer, event string, data any) error {
 	return err
 }
 
-func commandCodeStreamToAnthropicMessagesWithIdleTimeout(reader io.Reader, model string, messageID string, logger *logging.Logger, idleTimeout time.Duration) (*protocol.AnthropicResponse, error) {
+func commandCodeStreamToAnthropicMessagesWithIdleTimeout(reader io.Reader, model string, messageID string, logger *logging.Logger, idleTimeout time.Duration, sessionID string) (*protocol.AnthropicResponse, error) {
 	done := make(chan struct{})
 	defer close(done)
 	lines := streaming.ScanLines(reader, done)
-	content, finishReason, usage, err := collectCommandCodeAnthropicContent(lines, logger, idleTimeout)
+	content, finishReason, usage, err := collectCommandCodeAnthropicContent(lines, logger, idleTimeout, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	return protocol.CommandCodeToAnthropicMessages(messageID, model, content, finishReason, usage), nil
 }
 
-func collectCommandCodeAnthropicContent(lines <-chan streaming.StreamLine, logger *logging.Logger, idleTimeout time.Duration) ([]protocol.AnthropicContent, string, *protocol.Usage, error) {
+func collectCommandCodeAnthropicContent(lines <-chan streaming.StreamLine, logger *logging.Logger, idleTimeout time.Duration, sessionID string) ([]protocol.AnthropicContent, string, *protocol.Usage, error) {
 	var textContent strings.Builder
 	var reasoningContent strings.Builder
 	finishReason := "stop"
@@ -925,7 +954,7 @@ func collectCommandCodeAnthropicContent(lines <-chan streaming.StreamLine, logge
 		line, err := streaming.NextLine(lines, idleTimeout)
 		if err != nil {
 			if errors.Is(err, streaming.ErrStreamIdleTimeout) {
-				count := consecutiveTimeouts.Add(1)
+				count := incrementTimeout(sessionID)
 				message := timeoutMessage(count)
 				return nil, "", nil, apierror.NewAPIError(apierror.ErrorTypeRateLimit, message).WithCode(http.StatusTooManyRequests)
 			}
@@ -1001,7 +1030,7 @@ func collectCommandCodeAnthropicContent(lines <-chan streaming.StreamLine, logge
 	return content, finishReason, usage, nil
 }
 
-func commandCodeStreamToOpenAIWithIdleTimeout(reader io.Reader, model string, completionID string, created int64, logger *logging.Logger, idleTimeout time.Duration) (*protocol.OpenAIResponse, error) {
+func commandCodeStreamToOpenAIWithIdleTimeout(reader io.Reader, model string, completionID string, created int64, logger *logging.Logger, idleTimeout time.Duration, sessionID string) (*protocol.OpenAIResponse, error) {
 	done := make(chan struct{})
 	defer close(done)
 	lines := streaming.ScanLines(reader, done)
@@ -1015,7 +1044,7 @@ func commandCodeStreamToOpenAIWithIdleTimeout(reader io.Reader, model string, co
 		line, err := streaming.NextLine(lines, idleTimeout)
 		if err != nil {
 			if errors.Is(err, streaming.ErrStreamIdleTimeout) {
-				count := consecutiveTimeouts.Add(1)
+				count := incrementTimeout(sessionID)
 				message := timeoutMessage(count)
 				return nil, apierror.NewAPIError(apierror.ErrorTypeRateLimit, message).WithCode(http.StatusTooManyRequests)
 			}
