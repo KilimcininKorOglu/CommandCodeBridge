@@ -8,7 +8,7 @@ import (
 )
 
 func TestLoadFallsBackToDefaultsWhenFileMissing(t *testing.T) {
-	cfg, err := Load("/tmp/nonexistent-config-test.json")
+	cfg, err := Load(filepath.Join(t.TempDir(), "nonexistent-config-test.json"))
 	if err != nil {
 		t.Fatalf("Load() error = %v, want nil for missing file", err)
 	}
