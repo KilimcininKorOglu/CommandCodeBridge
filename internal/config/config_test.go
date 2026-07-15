@@ -93,7 +93,7 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("COMMANDCODE_PROXY_TOKEN", "envtoken")
 	t.Setenv("LOG_LEVEL", "debug")
 
-	cfg, err := Load("/tmp/nonexistent-config-test.json")
+	cfg, err := Load(filepath.Join(t.TempDir(), "nonexistent-config-test.json"))
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
