@@ -53,20 +53,39 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Build settings JSON that overrides the global settings.json env block.
-# --settings MERGES with the global config, so we must explicitly override
-# every env var that interferes:
-#   - ANTHROPIC_AUTH_TOKEN: global sets "dummy"; interactive (cli) mode uses
-#     this for auth, so it must be the real proxy token.
-#   - ANTHROPIC_CUSTOM_HEADERS: global injects Cloudflare gateway headers;
-#     cleared so they don't leak to the local proxy.
-#   - ANTHROPIC_BASE_URL: global points at Cloudflare gateway.
-SETTINGS=$(cat <<EOF
+# Build settings JSON safely using python3 to avoid JSON injection if the
+# token contains quotes or backslashes. Falls back to heredoc if python3
+# is unavailable.
+if command -v python3 &>/dev/null; then
+  SETTINGS=$(python3 -c '
+import json, sys
+token = sys.argv[1]
+model = sys.argv[2]
+haiku = sys.argv[3]
+print(json.dumps({
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:3050",
+    "ANTHROPIC_API_KEY": token,
+    "ANTHROPIC_AUTH_TOKEN": token,
+    "ANTHROPIC_CUSTOM_HEADERS": "",
+    "ANTHROPIC_MODEL": model,
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": haiku,
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": model
+  },
+  "model": model
+}))
+' "$PROXY_TOKEN" "$MODEL" "$HAIKU")
+else
+  # Fallback: escape token for JSON (handles " and \)
+  ESCAPED_TOKEN="${PROXY_TOKEN//\\/\\\\}"
+  ESCAPED_TOKEN="${ESCAPED_TOKEN//\"/\\\"}"
+  SETTINGS=$(cat <<EOF
 {
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:3050",
-    "ANTHROPIC_API_KEY": "${PROXY_TOKEN}",
-    "ANTHROPIC_AUTH_TOKEN": "${PROXY_TOKEN}",
+    "ANTHROPIC_API_KEY": "${ESCAPED_TOKEN}",
+    "ANTHROPIC_AUTH_TOKEN": "${ESCAPED_TOKEN}",
     "ANTHROPIC_CUSTOM_HEADERS": "",
     "ANTHROPIC_MODEL": "${MODEL}",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${HAIKU}",
@@ -76,6 +95,7 @@ SETTINGS=$(cat <<EOF
   "model": "${MODEL}"
 }
 EOF
-)
+  )
+fi
 
 exec claude --settings "$SETTINGS" "${PASSTHROUGH[@]+"${PASSTHROUGH[@]}"}"

@@ -36,7 +36,7 @@ func TestCommandCodeStreamToAnthropicMessagesHandlesReasoningAndToolCalls(t *tes
 		`{"type":"finish","finishReason":"tool_calls","totalUsage":{"inputTokens":3,"outputTokens":4}}`,
 	}, "\n"))
 
-	resp, err := commandCodeStreamToAnthropicMessagesWithIdleTimeout(stream, "model", "msg-test", nil, 0)
+	resp, err := commandCodeStreamToAnthropicMessagesWithIdleTimeout(stream, "model", "msg-test", nil, 0, "")
 	if err != nil {
 		t.Fatalf("commandCodeStreamToAnthropicMessagesWithIdleTimeout() error = %v", err)
 	}

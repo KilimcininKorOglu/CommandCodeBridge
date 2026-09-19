@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/kilimcininkoroglu/commandcode-bridge/internal/config"
 )
@@ -17,11 +18,15 @@ func OpenAIToCommandCode(req *OpenAIRequest) (*CommandCodeRequest, error) {
 		return nil, errors.New("nil request")
 	}
 
-	// Convert messages
+	// Convert messages and extract system parts in a single pass
 	toolNameByID := buildOpenAIToolNameMap(req.Messages)
 	ccMessages := make([]CommandCodeMessage, 0, len(req.Messages))
+	systemParts := []string{}
 	for _, msg := range req.Messages {
 		if msg.Role == "system" {
+			if str, ok := msg.Content.(string); ok && str != "" {
+				systemParts = append(systemParts, str)
+			}
 			continue
 		}
 		ccMsg, err := openaiMessageToCommandCode(msg, toolNameByID)
@@ -33,6 +38,7 @@ func OpenAIToCommandCode(req *OpenAIRequest) (*CommandCodeRequest, error) {
 		}
 		ccMessages = append(ccMessages, ccMsg)
 	}
+	system := strings.Join(systemParts, "\n\n")
 
 	// Convert tools
 	ccTools := make([]CommandCodeTool, 0, len(req.Tools))
@@ -44,35 +50,9 @@ func OpenAIToCommandCode(req *OpenAIRequest) (*CommandCodeRequest, error) {
 		ccTools = append(ccTools, ccTool)
 	}
 
-	// Build system message from OpenAI messages if present
-	systemParts := []string{}
-	for _, msg := range req.Messages {
-		if msg.Role == "system" {
-			if str, ok := msg.Content.(string); ok && str != "" {
-				systemParts = append(systemParts, str)
-			}
-		}
-	}
-	system := strings.Join(systemParts, "\n\n")
-
-	// Get environment info
-	workingDir, _ := config.GetWorkingDir()
-	dateStr := config.GetDateStr()
-	env := config.GetEnvironment()
-	isGitRepo, currentBranch, mainBranch, gitStatus, recentCommits := config.GetGitInfo()
-
+	// Get environment info and build request
 	ccReq := &CommandCodeRequest{
-		Config: CommandCodeConfig{
-			WorkingDir:    workingDir,
-			Date:          dateStr,
-			Environment:   env,
-			Structure:     []string{},
-			IsGitRepo:     isGitRepo,
-			CurrentBranch: currentBranch,
-			MainBranch:    mainBranch,
-			GitStatus:     gitStatus,
-			RecentCommits: recentCommits,
-		},
+		Config:         buildCommandCodeConfig(),
 		Memory:         nil,
 		Taste:          nil,
 		Skills:         "",
@@ -98,6 +78,24 @@ func OpenAIToCommandCode(req *OpenAIRequest) (*CommandCodeRequest, error) {
 	}
 
 	return ccReq, nil
+}
+
+// buildCommandCodeConfig gathers environment metadata for the upstream request.
+// Both OpenAI and Anthropic converters share this identical config block.
+func buildCommandCodeConfig() CommandCodeConfig {
+	workingDir, _ := config.GetWorkingDir()
+	isGitRepo, currentBranch, mainBranch, gitStatus, recentCommits := config.GetGitInfo()
+	return CommandCodeConfig{
+		WorkingDir:    workingDir,
+		Date:          config.GetDateStr(),
+		Environment:   config.GetEnvironment(),
+		Structure:     []string{},
+		IsGitRepo:     isGitRepo,
+		CurrentBranch: currentBranch,
+		MainBranch:    mainBranch,
+		GitStatus:     gitStatus,
+		RecentCommits: recentCommits,
+	}
 }
 
 // defaultMaxTokens returns the upstream default when the OpenAI request omits max_tokens.
@@ -207,23 +205,8 @@ func AnthropicMessagesToCommandCode(req *AnthropicRequest) (*CommandCodeRequest,
 		ccThinking = req.Thinking
 	}
 
-	workingDir, _ := config.GetWorkingDir()
-	dateStr := config.GetDateStr()
-	env := config.GetEnvironment()
-	isGitRepo, currentBranch, mainBranch, gitStatus, recentCommits := config.GetGitInfo()
-
 	return &CommandCodeRequest{
-		Config: CommandCodeConfig{
-			WorkingDir:    workingDir,
-			Date:          dateStr,
-			Environment:   env,
-			Structure:     []string{},
-			IsGitRepo:     isGitRepo,
-			CurrentBranch: currentBranch,
-			MainBranch:    mainBranch,
-			GitStatus:     gitStatus,
-			RecentCommits: recentCommits,
-		},
+		Config:         buildCommandCodeConfig(),
 		Memory:         nil,
 		Taste:          nil,
 		Skills:         "",
@@ -375,6 +358,8 @@ func BuildAnthropicResponse(model string, fullText string, toolCalls []ToolCall,
 // randomHex generates random hex string
 func randomHex(n int) string {
 	b := make([]byte, n)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
 	return hex.EncodeToString(b)
 }
