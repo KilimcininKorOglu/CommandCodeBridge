@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Add full OpenAI Responses streaming item lifecycle: output_item.added, content_part.added/done, output_item.done for message and reasoning items, and reasoning_text deltas, with all items reflected in response.completed.
+- Add leading role:assistant chunk and unique tool_calls indexes to chat completions streams.
+- Add ping after message_start and signature_delta before thinking blocks close in Anthropic streams.
+
+### Changed
+- Lift system/developer Responses input items into params.system instead of forwarding roles the upstream rejects; drop replayed reasoning items from request input.
+- Synthesize terminal events (Anthropic message_delta/message_stop, OpenAI finish_reason chunk) when the upstream stream ends without a finish event, so clients no longer hang waiting for stream completion.
+- Merge consecutive reasoning deltas into one Anthropic thinking block.
+- Derive stop_reason tool_use / finish_reason tool_calls when tool blocks were emitted.
+- Make in-stream error events format-aware: Anthropic-shaped event: error envelopes and OpenAI payloads with a top-level type:error for Responses clients.
+- Stop emitting upstream toolResult events as invalid role:tool chat completions chunks.
+- Remove the OpenAI-style [DONE] marker from Anthropic streams.
+- Default claude-proxy.sh model to deepseek/deepseek-v4.1-flash.
+
 ## [1.2.0] - 2026-07-13
 
 ### Added
