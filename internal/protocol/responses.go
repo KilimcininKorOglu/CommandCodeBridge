@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/kilimcininkoroglu/commandcode-bridge/internal/config"
 )
@@ -87,7 +88,8 @@ func OpenAIResponsesToCommandCode(req *OpenAIResponsesRequest) (*CommandCodeRequ
 		return nil, errors.New("nil request")
 	}
 
-	messages := responsesInputToCommandCodeMessages(req.Input)
+	messages, systemText := responsesInputToCommandCode(req.Input)
+	system := strings.Join(nonEmptyStrings(req.Instructions, systemText), "\n\n")
 	tools := make([]CommandCodeTool, 0, len(req.Tools))
 	for _, tool := range req.Tools {
 		ccTool := openAIToolToCommandCode(tool)
@@ -103,7 +105,7 @@ func OpenAIResponsesToCommandCode(req *OpenAIResponsesRequest) (*CommandCodeRequ
 		Messages:          messages,
 		MaxTokens:         defaultMaxTokens(req.MaxOutputTokens),
 		Stream:            true,
-		System:            req.Instructions,
+		System:            system,
 		Temperature:       req.Temperature,
 		TopP:              req.TopP,
 		Metadata:          req.Metadata,
@@ -123,14 +125,18 @@ func OpenAIResponsesCompactToCommandCode(req *OpenAIResponsesCompactRequest) (*C
 	if req == nil {
 		return nil, errors.New("nil request")
 	}
-	messages := responsesInputToCommandCodeMessages(req.Input)
+	messages, systemText := responsesInputToCommandCode(req.Input)
+	system := strings.Join(nonEmptyStrings(
+		"Compact the provided conversation while preserving the information needed to continue it. Return only the compacted context.",
+		systemText,
+	), "\n\n")
 	ccReq := baseCommandCodeRequest()
 	ccReq.Params = CommandCodeParams{
 		Model:     req.Model,
 		Messages:  messages,
 		MaxTokens: 64000,
 		Stream:    true,
-		System:    "Compact the provided conversation while preserving the information needed to continue it. Return only the compacted context.",
+		System:    system,
 	}
 	return ccReq, nil
 }
@@ -194,32 +200,70 @@ func BuildOpenAICompactionObject(id string, created int64, text string, usage *U
 	}
 }
 
-func responsesInputToCommandCodeMessages(input any) []CommandCodeMessage {
+// responsesInputToCommandCode converts the Responses input into CommandCode
+// messages plus any system/developer text extracted from message items. The
+// upstream only accepts user/assistant/tool roles in params.messages, so
+// system-role items are lifted into the top-level system prompt instead.
+func responsesInputToCommandCode(input any) ([]CommandCodeMessage, string) {
 	switch v := input.(type) {
 	case string:
 		if v == "" {
-			return nil
+			return nil, ""
 		}
-		return []CommandCodeMessage{{Role: "user", Content: []CommandCodeContent{{Type: "text", Text: v}}}}
+		return []CommandCodeMessage{{Role: "user", Content: []CommandCodeContent{{Type: "text", Text: v}}}}, ""
 	case []any:
 		toolNameByID := responsesToolNameMap(v)
+		systemParts := []string{}
 		messages := make([]CommandCodeMessage, 0, len(v))
 		for _, item := range v {
 			itemMap, ok := item.(map[string]any)
 			if !ok {
 				continue
 			}
+			if responsesItemIsSystem(itemMap) {
+				if text := contentPartToString(itemMap["content"]); text != "" {
+					systemParts = append(systemParts, text)
+				}
+				continue
+			}
+			if itemType, _ := itemMap["type"].(string); itemType == "reasoning" {
+				// Reasoning items are client-side replay of prior thinking;
+				// the upstream has no such message role, so drop them instead
+				// of leaking their text as user content.
+				continue
+			}
 			if msg, ok := responseInputItemToCommandCode(itemMap, toolNameByID); ok {
 				messages = append(messages, msg)
 			}
 		}
-		return messages
+		return messages, strings.Join(systemParts, "\n\n")
 	default:
 		if text := contentPartToString(v); text != "" {
-			return []CommandCodeMessage{{Role: "user", Content: []CommandCodeContent{{Type: "text", Text: text}}}}
+			return []CommandCodeMessage{{Role: "user", Content: []CommandCodeContent{{Type: "text", Text: text}}}}, ""
 		}
 	}
-	return nil
+	return nil, ""
+}
+
+// responsesItemIsSystem reports whether an input item is a message carrying a
+// system or developer role, which must not reach params.messages.
+func responsesItemIsSystem(itemMap map[string]any) bool {
+	itemType, _ := itemMap["type"].(string)
+	if itemType != "message" && itemType != "" {
+		return false
+	}
+	role, _ := itemMap["role"].(string)
+	return role == "system" || role == "developer"
+}
+
+func nonEmptyStrings(values ...string) []string {
+	result := make([]string, 0, len(values))
+	for _, v := range values {
+		if v != "" {
+			result = append(result, v)
+		}
+	}
+	return result
 }
 
 func responseInputItemToCommandCode(itemMap map[string]any, toolNameByID map[string]string) (CommandCodeMessage, bool) {
