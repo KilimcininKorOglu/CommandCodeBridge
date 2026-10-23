@@ -128,3 +128,46 @@ func TestBuildOpenAIResponseObjectIncludesTextAndToolCalls(t *testing.T) {
 		t.Fatalf("TotalTokens = %d, want %d", got, want)
 	}
 }
+
+func TestOpenAIResponsesToCommandCodeLiftsSystemRoleItems(t *testing.T) {
+	req := &OpenAIResponsesRequest{
+		Model:        "model",
+		Instructions: "be terse",
+		Input: []any{
+			map[string]any{
+				"type": "message",
+				"role": "system",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": "You are a fish."},
+				},
+			},
+			map[string]any{
+				"type":    "message",
+				"role":    "developer",
+				"content": "Prefer tabs.",
+			},
+			map[string]any{
+				"type": "message",
+				"role": "user",
+				"content": []any{
+					map[string]any{"type": "input_text", "text": "hi"},
+				},
+			},
+		},
+	}
+
+	ccReq, err := OpenAIResponsesToCommandCode(req)
+	if err != nil {
+		t.Fatalf("OpenAIResponsesToCommandCode() error = %v", err)
+	}
+	wantSystem := "be terse\n\nYou are a fish.\n\nPrefer tabs."
+	if got := ccReq.Params.System; got != wantSystem {
+		t.Fatalf("System = %q, want %q", got, wantSystem)
+	}
+	if len(ccReq.Params.Messages) != 1 {
+		t.Fatalf("len(Messages) = %d, want 1 (system items must not reach params.messages)", len(ccReq.Params.Messages))
+	}
+	if got := ccReq.Params.Messages[0].Role; got != "user" {
+		t.Fatalf("Messages[0].Role = %q, want %q", got, "user")
+	}
+}

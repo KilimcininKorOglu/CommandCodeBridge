@@ -17,13 +17,17 @@ const maxStreamLineSize = 4 * 1024 * 1024
 
 // OpenAITranslator converts CommandCode NDJSON to OpenAI SSE format
 type OpenAITranslator struct {
-	model        string
-	completionID string
-	created      int64
-	inputTokens  int
-	outputTokens int
-	cachedTokens int
-	buffer       strings.Builder
+	model           string
+	completionID    string
+	created         int64
+	inputTokens     int
+	outputTokens    int
+	cachedTokens    int
+	buffer          strings.Builder
+	roleSent        bool
+	finished        bool
+	toolCallCount   int
+	toolCallsEmitted bool
 }
 
 // NewOpenAITranslator creates a new OpenAI streaming translator
@@ -71,7 +75,9 @@ func (t *OpenAITranslator) ParseLine(line string) ([]SSEEvent, error) {
 	case "toolCall", "tool-call":
 		return t.handleToolCall(event)
 	case "toolResult", "tool-result":
-		return t.handleToolResult(event)
+		// Tool results are request-side messages; emitting them as completion
+		// chunks would violate the chat completions stream shape.
+		return nil, nil
 	case "finish", "finish-step":
 		return t.handleFinish(event)
 	case "error":
@@ -81,8 +87,38 @@ func (t *OpenAITranslator) ParseLine(line string) ([]SSEEvent, error) {
 	}
 }
 
+// roleChunk returns the leading chunk carrying the assistant role, which the
+// OpenAI stream shape sends before any content delta.
+func (t *OpenAITranslator) roleChunk() []SSEEvent {
+	if t.roleSent {
+		return nil
+	}
+	t.roleSent = true
+	chunk := OpenAIChunk{
+		ID:      t.completionID,
+		Object:  "chat.completion.chunk",
+		Created: t.created,
+		Model:   t.model,
+		Choices: []OpenAIChoice{
+			{
+				Index: 0,
+				Delta: &OpenAIMessage{
+					Role:    "assistant",
+					Content: "",
+				},
+			},
+		},
+	}
+	data, err := json.Marshal(chunk)
+	if err != nil {
+		return nil
+	}
+	return []SSEEvent{{Event: "", Data: string(data)}}
+}
+
 // handleText processes text events
 func (t *OpenAITranslator) handleText(event CommandCodeEvent) ([]SSEEvent, error) {
+	t.roleSent = true
 	chunk := OpenAIChunk{
 		ID:      t.completionID,
 		Object:  "chat.completion.chunk",
@@ -133,6 +169,8 @@ func (t *OpenAITranslator) handleContentDelta(content string) ([]SSEEvent, error
 		return nil, nil
 	}
 
+	events := t.roleChunk()
+
 	chunk := OpenAIChunk{
 		ID:      t.completionID,
 		Object:  "chat.completion.chunk",
@@ -153,9 +191,7 @@ func (t *OpenAITranslator) handleContentDelta(content string) ([]SSEEvent, error
 		return nil, err
 	}
 
-	return []SSEEvent{
-		{Event: "", Data: string(data)},
-	}, nil
+	return append(events, SSEEvent{Event: "", Data: string(data)}), nil
 }
 
 // handleReasoningDelta processes assistant reasoning deltas.
@@ -163,6 +199,8 @@ func (t *OpenAITranslator) handleReasoningDelta(event CommandCodeEvent) ([]SSEEv
 	if event.Text == "" {
 		return nil, nil
 	}
+
+	events := t.roleChunk()
 
 	chunk := OpenAIChunk{
 		ID:      t.completionID,
@@ -184,9 +222,7 @@ func (t *OpenAITranslator) handleReasoningDelta(event CommandCodeEvent) ([]SSEEv
 		return nil, err
 	}
 
-	return []SSEEvent{
-		{Event: "", Data: string(data)},
-	}, nil
+	return append(events, SSEEvent{Event: "", Data: string(data)}), nil
 }
 
 // handleToolCall processes tool call events.
@@ -198,8 +234,14 @@ func (t *OpenAITranslator) handleToolCall(event CommandCodeEvent) ([]SSEEvent, e
 		arguments = string(inputBytes)
 	}
 
+	events := t.roleChunk()
+
+	index := t.toolCallCount
+	t.toolCallCount++
+	t.toolCallsEmitted = true
+
 	toolCallStart := ToolCall{
-		Index: 0,
+		Index: index,
 		ID:    event.ToolCallID,
 		Type:  "function",
 		Function: &FunctionCall{
@@ -207,13 +249,17 @@ func (t *OpenAITranslator) handleToolCall(event CommandCodeEvent) ([]SSEEvent, e
 		},
 	}
 	toolCallArguments := ToolCall{
-		Index: 0,
+		Index: index,
 		Function: &FunctionCall{
 			Arguments: arguments,
 		},
 	}
 
-	return t.openAIToolCallEvents(toolCallStart, toolCallArguments)
+	toolEvents, err := t.openAIToolCallEvents(toolCallStart, toolCallArguments)
+	if err != nil {
+		return nil, err
+	}
+	return append(events, toolEvents...), nil
 }
 
 func (t *OpenAITranslator) openAIToolCallEvents(toolCalls ...ToolCall) ([]SSEEvent, error) {
@@ -244,40 +290,52 @@ func (t *OpenAITranslator) openAIToolCallEvents(toolCalls ...ToolCall) ([]SSEEve
 	return events, nil
 }
 
-// handleToolResult processes tool result events
-func (t *OpenAITranslator) handleToolResult(event CommandCodeEvent) ([]SSEEvent, error) {
-	chunk := OpenAIChunk{
-		ID:      t.completionID,
-		Object:  "chat.completion.chunk",
-		Created: t.created,
-		Model:   t.model,
-		Choices: []OpenAIChoice{
-			{
-				Index: 0,
-				Delta: &OpenAIMessage{
-					Role:       "tool",
-					Content:    event.Output.Value,
-					ToolCallID: event.ToolCallID,
-				},
-			},
-		},
-	}
-
-	data, err := json.Marshal(chunk)
+// handleFinish processes finish events
+func (t *OpenAITranslator) handleFinish(event CommandCodeEvent) ([]SSEEvent, error) {
+	events, err := t.finishEvents(event.FinishReason, event)
 	if err != nil {
 		return nil, err
 	}
-
-	return []SSEEvent{
-		{Event: "", Data: string(data)},
-	}, nil
+	return events, nil
 }
 
-// handleFinish processes finish events
-func (t *OpenAITranslator) handleFinish(event CommandCodeEvent) ([]SSEEvent, error) {
-	events := []SSEEvent{}
+// MapOpenAIFinishReason normalizes upstream finish reasons to the OpenAI
+// vocabulary and derives tool_calls when tool calls were emitted.
+func MapOpenAIFinishReason(reason string, toolCallsEmitted bool) string {
+	switch reason {
+	case "tool_calls", "tool-calls", "toolUse", "tool_use":
+		return "tool_calls"
+	case "length", "max_tokens":
+		return "length"
+	case "content_filter":
+		return "content_filter"
+	case "stop", "end_turn", "":
+		if toolCallsEmitted {
+			return "tool_calls"
+		}
+		return "stop"
+	default:
+		return reason
+	}
+}
 
-	// Send final chunk with finish reason
+// finishEvents builds the terminal chunk with finish_reason and usage.
+func (t *OpenAITranslator) finishEvents(reason string, event CommandCodeEvent) ([]SSEEvent, error) {
+	if t.finished {
+		return nil, nil
+	}
+	t.finished = true
+	events := t.roleChunk()
+
+	usage := event.TotalUsage
+	if usage == nil {
+		usage = event.Usage
+	}
+	inputTokens, outputTokens, cachedTokens := t.inputTokens, t.outputTokens, t.cachedTokens
+	if usage != nil {
+		inputTokens, outputTokens, cachedTokens = usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens
+	}
+
 	chunk := OpenAIChunk{
 		ID:      t.completionID,
 		Object:  "chat.completion.chunk",
@@ -287,22 +345,15 @@ func (t *OpenAITranslator) handleFinish(event CommandCodeEvent) ([]SSEEvent, err
 			{
 				Index:        0,
 				Delta:        &OpenAIMessage{},
-				FinishReason: event.FinishReason,
+				FinishReason: MapOpenAIFinishReason(reason, t.toolCallsEmitted),
 			},
 		},
 	}
-
-	if event.TotalUsage != nil {
+	if outputTokens > 0 {
 		chunk.Usage = &Usage{
-			InputTokens:       event.TotalUsage.InputTokens,
-			OutputTokens:      event.TotalUsage.OutputTokens,
-			CachedInputTokens: event.TotalUsage.CachedInputTokens,
-		}
-	} else if event.Usage != nil {
-		chunk.Usage = &Usage{
-			InputTokens:       event.Usage.InputTokens,
-			OutputTokens:      event.Usage.OutputTokens,
-			CachedInputTokens: event.Usage.CachedInputTokens,
+			InputTokens:       inputTokens,
+			OutputTokens:      outputTokens,
+			CachedInputTokens: cachedTokens,
 		}
 	}
 
@@ -311,9 +362,23 @@ func (t *OpenAITranslator) handleFinish(event CommandCodeEvent) ([]SSEEvent, err
 		return nil, err
 	}
 
-	events = append(events, SSEEvent{Event: "", Data: string(data)})
+	return append(events, SSEEvent{Event: "", Data: string(data)}), nil
+}
 
-	return events, nil
+// WriteFinish emits a synthesized terminal chunk when the upstream stream
+// ended without an explicit finish event; without it clients keep waiting for
+// the finish_reason chunk.
+func (t *OpenAITranslator) WriteFinish(writer io.Writer) error {
+	events, err := t.finishEvents("", CommandCodeEvent{})
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if err := writeSSEEvent(writer, event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetDoneEvent returns the SSE done event
@@ -342,7 +407,9 @@ func (t *OpenAITranslator) TranslateStreamWithIdleTimeout(reader io.Reader, writ
 			return err
 		}
 		if line == "" {
-			return nil
+			// Upstream ended without a finish event: synthesize the terminal
+			// chunk so clients see finish_reason instead of waiting forever.
+			return t.WriteFinish(writer)
 		}
 
 		events, err := t.ParseLine(line)

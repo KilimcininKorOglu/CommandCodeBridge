@@ -20,6 +20,7 @@ type AnthropicTranslator struct {
 // StreamContext tracks streaming state for Anthropic format
 type StreamContext struct {
 	messageStarted    bool
+	pingSent          bool
 	blockStarted      bool
 	currentBlockType  string
 	currentBlockIndex int
@@ -27,6 +28,7 @@ type StreamContext struct {
 	finishReason      string
 	hasError          bool
 	finished          bool
+	toolUseEmitted    bool
 }
 
 // NewAnthropicTranslator creates a new Anthropic streaming translator
@@ -54,7 +56,10 @@ func (t *AnthropicTranslator) TranslateWithIdleTimeout(reader io.Reader, writer 
 			return err
 		}
 		if line == "" {
-			return nil
+			// Upstream closed the stream without a finish event: synthesize the
+			// terminal sequence, otherwise Anthropic clients wait for
+			// message_stop forever ("still thinking" hang).
+			return t.WriteFinish(writer, "")
 		}
 
 		events, err := t.ParseLine(line)
@@ -68,6 +73,22 @@ func (t *AnthropicTranslator) TranslateWithIdleTimeout(reader io.Reader, writer 
 			}
 		}
 	}
+}
+
+// WriteFinish emits the terminal Anthropic events (content_block_stop for any
+// open block, message_delta with stop reason and usage, message_stop). It is
+// idempotent and used both for real finish events and for synthesized ends.
+func (t *AnthropicTranslator) WriteFinish(writer io.Writer, finishReason string) error {
+	events, err := t.finishEvents(finishReason)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if err := writeSSEEvent(writer, event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ParseLine parses a single NDJSON line from CommandCode stream
@@ -134,7 +155,8 @@ func (t *AnthropicTranslator) ParseLine(line string) ([]SSEEvent, error) {
 	return t.withMessageStart(events), nil
 }
 
-// withMessageStart prepends the Anthropic message_start event once.
+// withMessageStart prepends the Anthropic message_start event once, followed
+// by the ping event the real API sends after message_start.
 func (t *AnthropicTranslator) withMessageStart(events []SSEEvent) []SSEEvent {
 	if t.ctx.messageStarted || len(events) == 0 {
 		return events
@@ -158,7 +180,13 @@ func (t *AnthropicTranslator) withMessageStart(events []SSEEvent) []SSEEvent {
 	}
 	data, _ := json.Marshal(startEvent)
 	t.ctx.messageStarted = true
-	return append([]SSEEvent{{Event: "message_start", Data: string(data)}}, events...)
+	prepend := []SSEEvent{{Event: "message_start", Data: string(data)}}
+	if !t.ctx.pingSent {
+		ping, _ := json.Marshal(map[string]any{"type": "ping"})
+		prepend = append(prepend, SSEEvent{Event: "ping", Data: string(ping)})
+		t.ctx.pingSent = true
+	}
+	return append(prepend, events...)
 }
 
 // handleText processes text events
@@ -184,10 +212,7 @@ func (t *AnthropicTranslator) handleTextContentDelta(text string) ([]SSEEvent, e
 
 	events := []SSEEvent{}
 	if !t.ctx.blockStarted || t.ctx.currentBlockType != "text" {
-		close := t.closeTextBlock()
-		if close != "" {
-			events = append(events, SSEEvent{Event: "content_block_stop", Data: close})
-		}
+		events = append(events, t.closeBlockEvents()...)
 		t.ctx.currentBlockIndex = t.ctx.nextBlockIndex
 		t.ctx.nextBlockIndex++
 		t.ctx.currentBlockType = "text"
@@ -233,9 +258,11 @@ func (t *AnthropicTranslator) handleReasoningDelta(event CommandCodeEvent) ([]SS
 	}
 
 	events := []SSEEvent{}
-	close := t.closeTextBlock()
-	if close != "" {
-		events = append(events, SSEEvent{Event: "content_block_stop", Data: close})
+	// Reuse the open thinking block across consecutive reasoning deltas; only
+	// close when a block of a different type is open. Closing unconditionally
+	// would fragment every delta into its own single-delta thinking block.
+	if t.ctx.blockStarted && t.ctx.currentBlockType != "thinking" {
+		events = append(events, t.closeBlockEvents()...)
 	}
 
 	if !t.ctx.blockStarted || t.ctx.currentBlockType != "thinking" {
@@ -279,13 +306,11 @@ func (t *AnthropicTranslator) handleReasoningDelta(event CommandCodeEvent) ([]SS
 // handleToolCall processes tool call events.
 func (t *AnthropicTranslator) handleToolCall(event CommandCodeEvent) ([]SSEEvent, error) {
 	events := []SSEEvent{}
-	close := t.closeTextBlock()
-	if close != "" {
-		events = append(events, SSEEvent{Event: "content_block_stop", Data: close})
-	}
+	events = append(events, t.closeBlockEvents()...)
 
 	index := t.ctx.nextBlockIndex
 	t.ctx.nextBlockIndex++
+	t.ctx.toolUseEmitted = true
 	input := event.Input
 	if input == nil {
 		input = map[string]any{}
@@ -339,32 +364,36 @@ func (t *AnthropicTranslator) handleToolCall(event CommandCodeEvent) ([]SSEEvent
 
 // handleFinish processes finish events
 func (t *AnthropicTranslator) handleFinish(event CommandCodeEvent) ([]SSEEvent, error) {
+	return t.finishEvents(event.FinishReason)
+}
+
+// finishEvents builds the terminal Anthropic event sequence. When the upstream
+// finish reason is missing or a plain stop, tool_use blocks already emitted
+// still require stop_reason "tool_use" per the Messages spec.
+func (t *AnthropicTranslator) finishEvents(finishReason string) ([]SSEEvent, error) {
 	if t.ctx.finished {
 		return nil, nil
 	}
 	t.ctx.finished = true
 	events := []SSEEvent{}
 
-	// Close current text block
-	close := t.closeTextBlock()
-	if close != "" {
-		events = append(events, SSEEvent{Event: "content_block_stop", Data: close})
+	events = append(events, t.closeBlockEvents()...)
+
+	stopReason := mapAnthropicStreamStopReason(finishReason)
+	if stopReason == "end_turn" && t.ctx.toolUseEmitted {
+		stopReason = "tool_use"
 	}
 
-	usage := event.TotalUsage
-	if usage == nil {
-		usage = event.Usage
-	}
-	anthropicUsage := map[string]any{}
-	if usage != nil {
-		anthropicUsage["output_tokens"] = usage.OutputTokens
+	usage := map[string]any{"output_tokens": t.outputTokens}
+	if t.inputTokens > 0 {
+		usage["input_tokens"] = t.inputTokens
 	}
 
 	// Send message delta with stop reason
 	deltaEvent := map[string]any{
 		"type":  "message_delta",
-		"delta": map[string]any{"stop_reason": mapAnthropicStreamStopReason(event.FinishReason), "stop_sequence": nil},
-		"usage": anthropicUsage,
+		"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
+		"usage": usage,
 	}
 	data, err := json.Marshal(deltaEvent)
 	if err != nil {
@@ -379,35 +408,55 @@ func (t *AnthropicTranslator) handleFinish(event CommandCodeEvent) ([]SSEEvent, 
 	data, _ = json.Marshal(stopEvent)
 	events = append(events, SSEEvent{Event: "message_stop", Data: string(data)})
 
-	return events, nil
+	return t.withMessageStart(events), nil
 }
 
 func mapAnthropicStreamStopReason(reason string) string {
 	switch reason {
-	case "tool_calls", "tool-calls":
+	case "tool_calls", "tool-calls", "toolUse":
 		return "tool_use"
-	case "length":
+	case "length", "max_tokens":
 		return "max_tokens"
 	case "content_filter":
 		return "stop_sequence"
-	case "stop", "":
+	case "stop", "end_turn", "":
 		return "end_turn"
 	default:
 		return reason
 	}
 }
 
-// closeTextBlock closes the current text block if one is active
-func (t *AnthropicTranslator) closeTextBlock() string {
-	if t.ctx.blockStarted && (t.ctx.currentBlockType == "text" || t.ctx.currentBlockType == "thinking") {
-		t.ctx.blockStarted = false
-		t.ctx.currentBlockType = ""
-		stopEvent := map[string]any{
-			"type":  "content_block_stop",
-			"index": t.ctx.currentBlockIndex,
-		}
-		data, _ := json.Marshal(stopEvent)
-		return string(data)
+// closeBlockEvents emits the events that close the currently open text or
+// thinking block. Thinking blocks get a signature_delta before their
+// content_block_stop, mirroring the real Anthropic event shape.
+func (t *AnthropicTranslator) closeBlockEvents() []SSEEvent {
+	if !t.ctx.blockStarted {
+		return nil
 	}
-	return ""
+	blockType := t.ctx.currentBlockType
+	index := t.ctx.currentBlockIndex
+	t.ctx.blockStarted = false
+	t.ctx.currentBlockType = ""
+
+	events := []SSEEvent{}
+	if blockType == "thinking" {
+		signatureEvent := map[string]any{
+			"type":  "content_block_delta",
+			"index": index,
+			"delta": map[string]any{
+				"type":      "signature_delta",
+				"signature": "bridge",
+			},
+		}
+		if data, err := json.Marshal(signatureEvent); err == nil {
+			events = append(events, SSEEvent{Event: "content_block_delta", Data: string(data)})
+		}
+	}
+
+	stopEvent := map[string]any{
+		"type":  "content_block_stop",
+		"index": index,
+	}
+	data, _ := json.Marshal(stopEvent)
+	return append(events, SSEEvent{Event: "content_block_stop", Data: string(data)})
 }

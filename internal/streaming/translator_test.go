@@ -13,11 +13,11 @@ func TestOpenAITranslatorUsesTextForTextDelta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseLine() error = %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("len(events) = %d, want 1", len(events))
+	if len(events) != 2 {
+		t.Fatalf("len(events) = %d, want 2", len(events))
 	}
-	if !strings.Contains(events[0].Data, `"content":"hello"`) {
-		t.Fatalf("event data = %s, want text delta content", events[0].Data)
+	if !strings.Contains(events[1].Data, `"content":"hello"`) {
+		t.Fatalf("event data = %s, want text delta content", events[1].Data)
 	}
 }
 
@@ -27,11 +27,11 @@ func TestOpenAITranslatorUsesDeltaFallbackForTextDelta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseLine() error = %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("len(events) = %d, want 1", len(events))
+	if len(events) != 2 {
+		t.Fatalf("len(events) = %d, want 2", len(events))
 	}
-	if !strings.Contains(events[0].Data, `"content":"fallback"`) {
-		t.Fatalf("event data = %s, want delta fallback content", events[0].Data)
+	if !strings.Contains(events[1].Data, `"content":"fallback"`) {
+		t.Fatalf("event data = %s, want delta fallback content", events[1].Data)
 	}
 }
 
@@ -52,12 +52,15 @@ func TestOpenAITranslatorStreamsToolCallAsIncrementalDeltas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseLine() error = %v", err)
 	}
-	if len(events) != 2 {
-		t.Fatalf("len(events) = %d, want 2", len(events))
+	if len(events) != 3 {
+		t.Fatalf("len(events) = %d, want 3", len(events))
+	}
+	if !strings.Contains(events[0].Data, `"role":"assistant"`) {
+		t.Fatalf("first event = %s, want leading role chunk", events[0].Data)
 	}
 
 	var startChunk OpenAIChunk
-	if err := json.Unmarshal([]byte(events[0].Data), &startChunk); err != nil {
+	if err := json.Unmarshal([]byte(events[1].Data), &startChunk); err != nil {
 		t.Fatalf("start chunk JSON error = %v", err)
 	}
 	startToolCall := startChunk.Choices[0].Delta.ToolCalls[0]
@@ -81,7 +84,7 @@ func TestOpenAITranslatorStreamsToolCallAsIncrementalDeltas(t *testing.T) {
 	}
 
 	var argumentsChunk OpenAIChunk
-	if err := json.Unmarshal([]byte(events[1].Data), &argumentsChunk); err != nil {
+	if err := json.Unmarshal([]byte(events[2].Data), &argumentsChunk); err != nil {
 		t.Fatalf("arguments chunk JSON error = %v", err)
 	}
 	argumentsToolCall := argumentsChunk.Choices[0].Delta.ToolCalls[0]
@@ -105,11 +108,14 @@ func TestOpenAITranslatorHandlesReasoningDelta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseLine() error = %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("len(events) = %d, want 1", len(events))
+	if len(events) != 2 {
+		t.Fatalf("len(events) = %d, want 2", len(events))
 	}
-	if !strings.Contains(events[0].Data, `"reasoning_content":"thinking"`) {
-		t.Fatalf("event data = %s, want reasoning delta content", events[0].Data)
+	if !strings.Contains(events[0].Data, `"role":"assistant"`) {
+		t.Fatalf("first event = %s, want leading role chunk", events[0].Data)
+	}
+	if !strings.Contains(events[1].Data, `"reasoning_content":"thinking"`) {
+		t.Fatalf("event data = %s, want reasoning delta content", events[1].Data)
 	}
 }
 
@@ -119,11 +125,11 @@ func TestOpenAITranslatorUsesTotalUsageForFinish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseLine() error = %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("len(events) = %d, want 1", len(events))
+	if len(events) != 2 {
+		t.Fatalf("len(events) = %d, want 2", len(events))
 	}
-	if !strings.Contains(events[0].Data, `"inputTokens":3`) || !strings.Contains(events[0].Data, `"outputTokens":4`) {
-		t.Fatalf("event data = %s, want total usage", events[0].Data)
+	if !strings.Contains(events[1].Data, `"inputTokens":3`) || !strings.Contains(events[1].Data, `"outputTokens":4`) {
+		t.Fatalf("event data = %s, want total usage", events[1].Data)
 	}
 }
 
@@ -151,20 +157,23 @@ func TestAnthropicTranslatorHandlesTextDelta(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseLine() error = %v", err)
 	}
-	if len(events) != 3 {
-		t.Fatalf("len(events) = %d, want 3", len(events))
+	if len(events) != 4 {
+		t.Fatalf("len(events) = %d, want 4", len(events))
 	}
 	if events[0].Event != "message_start" {
 		t.Fatalf("first event = %q, want message_start", events[0].Event)
 	}
-	if events[1].Event != "content_block_start" {
-		t.Fatalf("second event = %q, want content_block_start", events[1].Event)
+	if events[1].Event != "ping" {
+		t.Fatalf("second event = %q, want ping", events[1].Event)
 	}
-	if events[2].Event != "content_block_delta" {
-		t.Fatalf("third event = %q, want content_block_delta", events[2].Event)
+	if events[2].Event != "content_block_start" {
+		t.Fatalf("third event = %q, want content_block_start", events[2].Event)
 	}
-	if !strings.Contains(events[2].Data, `"text":"hello"`) {
-		t.Fatalf("event data = %s, want text delta content", events[2].Data)
+	if events[3].Event != "content_block_delta" {
+		t.Fatalf("fourth event = %q, want content_block_delta", events[3].Event)
+	}
+	if !strings.Contains(events[3].Data, `"text":"hello"`) {
+		t.Fatalf("event data = %s, want text delta content", events[3].Data)
 	}
 }
 
@@ -217,18 +226,106 @@ func TestAnthropicTranslatorHandlesHyphenToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseLine() error = %v", err)
 	}
-	if len(events) != 4 {
-		t.Fatalf("len(events) = %d, want 4", len(events))
+	if len(events) != 5 {
+		t.Fatalf("len(events) = %d, want 5", len(events))
 	}
-	if events[0].Event != "message_start" || events[1].Event != "content_block_start" || events[2].Event != "content_block_delta" || events[3].Event != "content_block_stop" {
+	if events[0].Event != "message_start" || events[1].Event != "ping" || events[2].Event != "content_block_start" || events[3].Event != "content_block_delta" || events[4].Event != "content_block_stop" {
 		t.Fatalf("events = %#v, want message start and tool use block lifecycle", events)
 	}
 	var delta map[string]any
-	if err := json.Unmarshal([]byte(events[2].Data), &delta); err != nil {
+	if err := json.Unmarshal([]byte(events[3].Data), &delta); err != nil {
 		t.Fatalf("tool delta JSON error = %v", err)
 	}
 	deltaBody := delta["delta"].(map[string]any)
 	if got, want := deltaBody["type"], "input_json_delta"; got != want {
 		t.Fatalf("delta.type = %v, want %v", got, want)
+	}
+}
+
+func TestAnthropicTranslatorSynthesizesFinishOnStreamEnd(t *testing.T) {
+	translator := NewAnthropicTranslator("model", "msg-test")
+	reader := strings.NewReader(`{"type":"text-delta","text":"hi"}` + "\n")
+	var output bytes.Buffer
+
+	if err := translator.Translate(reader, &output); err != nil {
+		t.Fatalf("Translate() error = %v", err)
+	}
+	out := output.String()
+	if !strings.Contains(out, `"type":"message_delta"`) {
+		t.Fatalf("output = %s, want synthesized message_delta", out)
+	}
+	if !strings.Contains(out, `"type":"message_stop"`) {
+		t.Fatalf("output = %s, want synthesized message_stop", out)
+	}
+	if !strings.Contains(out, `"stop_reason":"end_turn"`) {
+		t.Fatalf("output = %s, want end_turn stop reason", out)
+	}
+}
+
+func TestAnthropicTranslatorDerivesToolUseStopReason(t *testing.T) {
+	translator := NewAnthropicTranslator("model", "msg-test")
+	reader := strings.NewReader(strings.Join([]string{
+		`{"type":"tool-call","toolCallId":"toolu_1","toolName":"lookup","input":{"q":"x"}}`,
+		`{"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":3,"outputTokens":4}}`,
+	}, "\n"))
+	var output bytes.Buffer
+
+	if err := translator.Translate(reader, &output); err != nil {
+		t.Fatalf("Translate() error = %v", err)
+	}
+	if !strings.Contains(output.String(), `"stop_reason":"tool_use"`) {
+		t.Fatalf("output = %s, want tool_use stop reason", output.String())
+	}
+}
+
+func TestAnthropicTranslatorEmitsSignatureDeltaForThinking(t *testing.T) {
+	translator := NewAnthropicTranslator("model", "msg-test")
+	reader := strings.NewReader(strings.Join([]string{
+		`{"type":"reasoning-delta","text":"think"}`,
+		`{"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":3,"outputTokens":4}}`,
+	}, "\n"))
+	var output bytes.Buffer
+
+	if err := translator.Translate(reader, &output); err != nil {
+		t.Fatalf("Translate() error = %v", err)
+	}
+	if !strings.Contains(output.String(), `"type":"signature_delta"`) {
+		t.Fatalf("output = %s, want signature_delta before thinking block closes", output.String())
+	}
+}
+
+func TestOpenAITranslatorSynthesizesFinishOnStreamEnd(t *testing.T) {
+	translator := NewOpenAITranslator("model", "chatcmpl-test", 1)
+	reader := strings.NewReader(`{"type":"text-delta","text":"hi"}` + "\n")
+	var output bytes.Buffer
+
+	if err := translator.TranslateStream(reader, &output); err != nil {
+		t.Fatalf("TranslateStream() error = %v", err)
+	}
+	out := output.String()
+	if !strings.Contains(out, `"finish_reason":"stop"`) {
+		t.Fatalf("output = %s, want synthesized finish_reason", out)
+	}
+	if !strings.Contains(out, `"role":"assistant"`) {
+		t.Fatalf("output = %s, want leading role chunk", out)
+	}
+}
+
+func TestOpenAITranslatorDerivesToolCallsFinishReason(t *testing.T) {
+	translator := NewOpenAITranslator("model", "chatcmpl-test", 1)
+	reader := strings.NewReader(strings.Join([]string{
+		`{"type":"tool-call","toolCallId":"call_1","toolName":"calc","input":{"expr":"1+1"}}`,
+		`{"type":"finish","finishReason":"stop","totalUsage":{"inputTokens":3,"outputTokens":4}}`,
+	}, "\n"))
+	var output bytes.Buffer
+
+	if err := translator.TranslateStream(reader, &output); err != nil {
+		t.Fatalf("TranslateStream() error = %v", err)
+	}
+	if !strings.Contains(output.String(), `"finish_reason":"tool_calls"`) {
+		t.Fatalf("output = %s, want tool_calls finish reason", output.String())
+	}
+	if !strings.Contains(output.String(), `"index":0`) {
+		t.Fatalf("output = %s, want tool call index 0", output.String())
 	}
 }

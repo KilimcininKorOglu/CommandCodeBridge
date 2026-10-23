@@ -298,15 +298,29 @@ func CommandCodeToAnthropicMessages(messageID string, model string, content []An
 		anthropicUsage.CacheReadInputTokens = usage.CachedInputTokens
 	}
 
+	stopReason := MapFinishReason(finishReason)
+	if stopReason == "end_turn" && anthropicContentHasType(content, "tool_use") {
+		stopReason = "tool_use"
+	}
+
 	return &AnthropicResponse{
 		ID:         messageID,
 		Type:       "message",
 		Role:       "assistant",
 		Content:    content,
 		Model:      model,
-		StopReason: MapFinishReason(finishReason),
+		StopReason: stopReason,
 		Usage:      anthropicUsage,
 	}
+}
+
+func anthropicContentHasType(content []AnthropicContent, contentType string) bool {
+	for _, item := range content {
+		if item.Type == contentType {
+			return true
+		}
+	}
+	return false
 }
 
 // MapFinishReason maps OpenAI finish reason to Anthropic stop reason
