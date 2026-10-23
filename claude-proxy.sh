@@ -33,7 +33,7 @@ if [[ -z "$PROXY_TOKEN" ]]; then
 fi
 
 # Defaults — overridable via --model / --haiku flags below.
-MODEL="deepseek/deepseek-v4-pro"
+MODEL="deepseek/deepseek-v4.1-flash"
 HAIKU="deepseek/deepseek-v4-flash"
 
 # Parse our own flags out of argv; everything else passes through to claude.
