@@ -121,7 +121,7 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 			translator := streaming.NewOpenAITranslator(openaiReq.Model, generateCompletionID(), time.Now().Unix())
 			streamWriter := newDelayedSSEWriter(w)
 			if err := translator.TranslateStreamWithIdleTimeout(resp.Body, streamWriter, streamIdleTimeout); err != nil {
-				handleStreamingError(w, streamWriter, deps.Logger, err)
+				handleStreamingError(w, streamWriter, deps.Logger, err, streamFormatOpenAI)
 				return
 			}
 			consecutiveTimeouts.Store(0)
@@ -129,7 +129,7 @@ func HandleChatCompletions(deps *HandlerDependencies) http.HandlerFunc {
 			if outputTokens == 0 {
 				cancel()
 				deps.Logger.Warn("Zero output tokens from upstream (OpenAI streaming)", nil)
-				sendStreamZeroOutput(w, streamWriter)
+				sendStreamZeroOutput(w, streamWriter, streamFormatOpenAI)
 				return
 			}
 			deps.Logger.Info("Token usage", map[string]any{
@@ -280,7 +280,7 @@ func handleCommandCodeResponsesRequest(w http.ResponseWriter, r *http.Request, d
 		streamWriter := newDelayedSSEWriter(w)
 		responseID := protocol.ResponseID("resp")
 		if err := commandCodeStreamToOpenAIResponsesSSE(resp.Body, streamWriter, responseID, model, time.Now().Unix(), deps.Logger, streamIdleTimeout); err != nil {
-			handleStreamingError(w, streamWriter, deps.Logger, err)
+			handleStreamingError(w, streamWriter, deps.Logger, err, streamFormatOpenAI)
 			return
 		}
 		consecutiveTimeouts.Store(0)
@@ -424,7 +424,7 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 			translator := streaming.NewAnthropicTranslator(anthropicReq.Model, generateMessageID())
 			streamWriter := newDelayedSSEWriter(w)
 			if err := translator.TranslateWithIdleTimeout(resp.Body, streamWriter, streamIdleTimeout); err != nil {
-				handleStreamingError(w, streamWriter, deps.Logger, err)
+				handleStreamingError(w, streamWriter, deps.Logger, err, streamFormatAnthropic)
 				return
 			}
 			consecutiveTimeouts.Store(0)
@@ -432,7 +432,7 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 			if outputTokens == 0 {
 				cancel()
 				deps.Logger.Warn("Zero output tokens from upstream (Anthropic streaming)", nil)
-				sendStreamZeroOutput(w, streamWriter)
+				sendStreamZeroOutput(w, streamWriter, streamFormatAnthropic)
 				return
 			}
 			deps.Logger.Info("Token usage", map[string]any{
@@ -443,7 +443,8 @@ func HandleMessages(deps *HandlerDependencies) http.HandlerFunc {
 				"output_tokens": outputTokens,
 				"cached_tokens": cachedTokens,
 			})
-			streamWriter.WriteDone()
+			// Anthropic streams terminate with message_stop; a trailing
+			// "data: [DONE]" is an OpenAI-ism the Messages spec does not define.
 			return
 		}
 
@@ -655,20 +656,65 @@ func handleUpstreamStatus(w http.ResponseWriter, resp *http.Response, logger *lo
 	return true
 }
 
-func sendStreamZeroOutput(w http.ResponseWriter, streamWriter *delayedSSEWriter) {
-	apiErr := apierror.NewAPIError(apierror.ErrorTypeRateLimit, "Empty response from upstream (zero output tokens)").WithCode(http.StatusTooManyRequests)
+// streamFormat identifies which wire format a stream is speaking so that
+// in-stream error events match the spec of that format.
+type streamFormat string
+
+const (
+	streamFormatOpenAI    streamFormat = "openai"
+	streamFormatAnthropic streamFormat = "anthropic"
+)
+
+// writeStreamErrorEvent writes an error as an in-stream event shaped for the
+// target format: Anthropic requires `event: error` with a nested error object,
+// OpenAI chat clients read data.error, and Responses clients (pi-ai) look for
+// a top-level type "error" — one payload covers all OpenAI shapes.
+func writeStreamErrorEvent(w http.ResponseWriter, streamWriter *delayedSSEWriter, format streamFormat, message string, retryAfter int) {
 	if !streamWriter.Started() {
-		sendErrorWithRetryAfter(w, apiErr, emptyResponseRetryAfterSeconds)
+		apiErr := apierror.NewAPIError(apierror.ErrorTypeRateLimit, message).WithCode(http.StatusTooManyRequests)
+		if format == streamFormatAnthropic {
+			data, _ := json.Marshal(map[string]any{
+				"type": "error",
+				"error": map[string]any{
+					"type":    "api_error",
+					"message": message,
+				},
+			})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write(data)
+			return
+		}
+		sendErrorWithRetryAfter(w, apiErr, retryAfter)
+		return
+	}
+	if format == streamFormatAnthropic {
+		data, _ := json.Marshal(map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type":        "api_error",
+				"message":     message,
+				"retry_after": retryAfter,
+			},
+		})
+		_, _ = fmt.Fprintf(streamWriter.writer, "event: error\ndata: %s\n\n", string(data))
 		return
 	}
 	data, _ := json.Marshal(map[string]any{
+		"type":        "error",
+		"code":        "rate_limit_error",
+		"message":     message,
+		"retry_after": retryAfter,
 		"error": map[string]any{
-			"message": apiErr.Message,
-			"type":    apiErr.Type,
+			"message": message,
+			"type":    "rate_limit_error",
 		},
-		"retry_after": emptyResponseRetryAfterSeconds,
 	})
 	_, _ = fmt.Fprintf(streamWriter.writer, "data: %s\n\n", string(data))
+}
+
+func sendStreamZeroOutput(w http.ResponseWriter, streamWriter *delayedSSEWriter, format streamFormat) {
+	writeStreamErrorEvent(w, streamWriter, format, "Empty response from upstream (zero output tokens)", emptyResponseRetryAfterSeconds)
 }
 
 func timeoutMessage(count int64) string {
@@ -678,7 +724,7 @@ func timeoutMessage(count int64) string {
 	return "Response timeout - request timed out"
 }
 
-func handleStreamingError(w http.ResponseWriter, streamWriter *delayedSSEWriter, logger *logging.Logger, err error) {
+func handleStreamingError(w http.ResponseWriter, streamWriter *delayedSSEWriter, logger *logging.Logger, err error, format streamFormat) {
 	logger.Error("Streaming error", map[string]any{
 		"error": err.Error(),
 	})
@@ -687,28 +733,26 @@ func handleStreamingError(w http.ResponseWriter, streamWriter *delayedSSEWriter,
 		logger.Warn("Stream idle timeout", map[string]any{
 			"consecutive": count,
 		})
-		sendStreamRetryableError(w, streamWriter, timeoutMessage(count), timeoutRetryAfterSeconds, http.StatusTooManyRequests)
+		writeStreamErrorEvent(w, streamWriter, format, timeoutMessage(count), timeoutRetryAfterSeconds)
 		return
 	}
 	if !streamWriter.Started() {
-		sendErrorWithRetryAfter(w, apierror.NewAPIError(apierror.ErrorTypeProxy, "Upstream streaming error").WithCode(http.StatusBadGateway), emptyResponseRetryAfterSeconds)
+		apiErr := apierror.NewAPIError(apierror.ErrorTypeProxy, "Upstream streaming error").WithCode(http.StatusBadGateway)
+		if format == streamFormatAnthropic {
+			data, _ := json.Marshal(map[string]any{
+				"type": "error",
+				"error": map[string]any{
+					"type":    "api_error",
+					"message": apiErr.Message,
+				},
+			})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write(data)
+			return
+		}
+		sendErrorWithRetryAfter(w, apiErr, emptyResponseRetryAfterSeconds)
 	}
-}
-
-func sendStreamRetryableError(w http.ResponseWriter, streamWriter *delayedSSEWriter, message string, retryAfter int, status int) {
-	apiErr := apierror.NewAPIError(apierror.ErrorTypeRateLimit, message).WithCode(status)
-	if !streamWriter.Started() {
-		sendErrorWithRetryAfter(w, apiErr, retryAfter)
-		return
-	}
-	data, _ := json.Marshal(map[string]any{
-		"error": map[string]any{
-			"message": apiErr.Message,
-			"type":    apiErr.Type,
-		},
-		"retry_after": retryAfter,
-	})
-	_, _ = fmt.Fprintf(streamWriter.writer, "data: %s\n\n", string(data))
 }
 
 func decodeRequestBody(body io.Reader, target any) *apierror.APIError {
@@ -735,9 +779,114 @@ func commandCodeStreamToOpenAIResponsesSSE(reader io.Reader, writer io.Writer, r
 	defer close(done)
 	lines := streaming.ScanLines(reader, done)
 	var text strings.Builder
+	var reasoning strings.Builder
 	usage := &protocol.Usage{}
-	outputIndex := 0
-	contentIndex := 0
+	// Strict Responses clients (pi-ai, Codex CLI) ignore text deltas unless the
+	// message item is announced via response.output_item.added first, and they
+	// do not backfill content from response.completed — the item lifecycle
+	// events below are therefore mandatory, not cosmetic.
+	msgItemID := ""
+	msgOutputIndex := -1
+	rsItemID := ""
+	rsOutputIndex := -1
+	rsCompletedItemID := ""
+	nextOutputIndex := 0
+	toolCalls := []protocol.ToolCall{}
+
+	ensureReasoningItem := func() error {
+		if rsOutputIndex >= 0 {
+			return nil
+		}
+		rsOutputIndex = nextOutputIndex
+		nextOutputIndex++
+		rsItemID = protocol.ResponseID("rs")
+		if rsCompletedItemID == "" {
+			rsCompletedItemID = rsItemID
+		}
+		return writeResponseSSEEvent(writer, "response.output_item.added", map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": rsOutputIndex,
+			"item": map[string]any{
+				"id":      rsItemID,
+				"type":    "reasoning",
+				"status":  "in_progress",
+				"summary": []any{},
+			},
+		})
+	}
+
+	closeReasoningItem := func() error {
+		if rsOutputIndex < 0 {
+			return nil
+		}
+		index := rsOutputIndex
+		id := rsItemID
+		rsOutputIndex = -1
+		return writeResponseSSEEvent(writer, "response.output_item.done", map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": index,
+			"item": map[string]any{
+				"id":     id,
+				"type":   "reasoning",
+				"status": "completed",
+				"content": []any{map[string]any{
+					"type": "reasoning_text",
+					"text": reasoning.String(),
+				}},
+				"summary": []any{},
+			},
+		})
+	}
+
+	ensureMessageItem := func() error {
+		if msgOutputIndex >= 0 {
+			return nil
+		}
+		msgOutputIndex = nextOutputIndex
+		nextOutputIndex++
+		msgItemID = protocol.ResponseID("msg")
+		if err := writeResponseSSEEvent(writer, "response.output_item.added", map[string]any{
+			"type":         "response.output_item.added",
+			"output_index": msgOutputIndex,
+			"item": map[string]any{
+				"id":      msgItemID,
+				"type":    "message",
+				"status":  "in_progress",
+				"role":    "assistant",
+				"content": []any{},
+			},
+		}); err != nil {
+			return err
+		}
+		return writeResponseSSEEvent(writer, "response.content_part.added", map[string]any{
+			"type":          "response.content_part.added",
+			"item_id":       msgItemID,
+			"output_index":  msgOutputIndex,
+			"content_index": 0,
+			"part": map[string]any{
+				"type":        "output_text",
+				"text":        "",
+				"annotations": []any{},
+			},
+		})
+	}
+
+	writeTextDelta := func(delta string) error {
+		if err := closeReasoningItem(); err != nil {
+			return err
+		}
+		if err := ensureMessageItem(); err != nil {
+			return err
+		}
+		text.WriteString(delta)
+		return writeResponseSSEEvent(writer, "response.output_text.delta", map[string]any{
+			"type":          "response.output_text.delta",
+			"item_id":       msgItemID,
+			"output_index":  msgOutputIndex,
+			"content_index": 0,
+			"delta":         delta,
+		})
+	}
 
 	for {
 		line, err := streaming.NextLine(lines, idleTimeout)
@@ -757,19 +906,29 @@ func commandCodeStreamToOpenAIResponsesSSE(reader io.Reader, writer io.Writer, r
 		}
 
 		switch event.Type {
+		case "reasoning-delta":
+			delta := streaming.TextDeltaContent(event)
+			if delta == "" {
+				continue
+			}
+			if err := ensureReasoningItem(); err != nil {
+				return err
+			}
+			reasoning.WriteString(delta)
+			if err := writeResponseSSEEvent(writer, "response.reasoning_text.delta", map[string]any{
+				"type":         "response.reasoning_text.delta",
+				"item_id":      rsItemID,
+				"output_index": rsOutputIndex,
+				"delta":        delta,
+			}); err != nil {
+				return err
+			}
 		case "text-delta":
 			delta := streaming.TextDeltaContent(event)
 			if delta == "" {
 				continue
 			}
-			text.WriteString(delta)
-			if err := writeResponseSSEEvent(writer, "response.output_text.delta", map[string]any{
-				"type":          "response.output_text.delta",
-				"item_id":       responseID,
-				"output_index":  outputIndex,
-				"content_index": contentIndex,
-				"delta":         delta,
-			}); err != nil {
+			if err := writeTextDelta(delta); err != nil {
 				return err
 			}
 		case "delta":
@@ -777,14 +936,7 @@ func commandCodeStreamToOpenAIResponsesSSE(reader io.Reader, writer io.Writer, r
 			if delta == "" {
 				continue
 			}
-			text.WriteString(delta)
-			if err := writeResponseSSEEvent(writer, "response.output_text.delta", map[string]any{
-				"type":          "response.output_text.delta",
-				"item_id":       responseID,
-				"output_index":  outputIndex,
-				"content_index": contentIndex,
-				"delta":         delta,
-			}); err != nil {
+			if err := writeTextDelta(delta); err != nil {
 				return err
 			}
 		case "text":
@@ -792,17 +944,13 @@ func commandCodeStreamToOpenAIResponsesSSE(reader io.Reader, writer io.Writer, r
 			if delta == "" {
 				continue
 			}
-			text.WriteString(delta)
-			if err := writeResponseSSEEvent(writer, "response.output_text.delta", map[string]any{
-				"type":          "response.output_text.delta",
-				"item_id":       responseID,
-				"output_index":  outputIndex,
-				"content_index": contentIndex,
-				"delta":         delta,
-			}); err != nil {
+			if err := writeTextDelta(delta); err != nil {
 				return err
 			}
 		case "tool-call", "toolCall":
+			if err := closeReasoningItem(); err != nil {
+				return err
+			}
 			arguments := "{}"
 			if event.Input != nil {
 				if inputString, ok := event.Input.(string); ok {
@@ -811,11 +959,28 @@ func commandCodeStreamToOpenAIResponsesSSE(reader io.Reader, writer io.Writer, r
 					arguments = string(inputBytes)
 				}
 			}
+			callItemID := protocol.ResponseID("fc")
+			toolIndex := nextOutputIndex
+			nextOutputIndex++
+			if err := writeResponseSSEEvent(writer, "response.output_item.added", map[string]any{
+				"type":         "response.output_item.added",
+				"output_index": toolIndex,
+				"item": map[string]any{
+					"id":        callItemID,
+					"type":      "function_call",
+					"status":    "in_progress",
+					"call_id":   event.ToolCallID,
+					"name":      event.ToolName,
+					"arguments": "",
+				},
+			}); err != nil {
+				return err
+			}
 			if err := writeResponseSSEEvent(writer, "response.output_item.done", map[string]any{
 				"type":         "response.output_item.done",
-				"output_index": outputIndex,
+				"output_index": toolIndex,
 				"item": map[string]any{
-					"id":        event.ToolCallID,
+					"id":        callItemID,
 					"type":      "function_call",
 					"status":    "completed",
 					"call_id":   event.ToolCallID,
@@ -825,7 +990,14 @@ func commandCodeStreamToOpenAIResponsesSSE(reader io.Reader, writer io.Writer, r
 			}); err != nil {
 				return err
 			}
-			outputIndex++
+			toolCalls = append(toolCalls, protocol.ToolCall{
+				ID:   event.ToolCallID,
+				Type: "function",
+				Function: protocol.FunctionCall{
+					Name:      event.ToolName,
+					Arguments: arguments,
+				},
+			})
 		case "finish", "finish-step":
 			if event.TotalUsage != nil {
 				usage.InputTokens = event.TotalUsage.InputTokens
@@ -852,16 +1024,59 @@ func commandCodeStreamToOpenAIResponsesSSE(reader io.Reader, writer io.Writer, r
 		return apierror.NewAPIError(apierror.ErrorTypeRateLimit, "Empty response from upstream (zero output tokens)").WithCode(http.StatusTooManyRequests)
 	}
 
-	if err := writeResponseSSEEvent(writer, "response.output_text.done", map[string]any{
-		"type":          "response.output_text.done",
-		"item_id":       responseID,
-		"output_index":  0,
-		"content_index": 0,
-		"text":          text.String(),
-	}); err != nil {
+	if err := closeReasoningItem(); err != nil {
 		return err
 	}
-	completed := protocol.BuildOpenAIResponseObject(responseID, model, created, text.String(), nil, usage)
+	if msgOutputIndex >= 0 {
+		if err := writeResponseSSEEvent(writer, "response.output_text.done", map[string]any{
+			"type":          "response.output_text.done",
+			"item_id":       msgItemID,
+			"output_index":  msgOutputIndex,
+			"content_index": 0,
+			"text":          text.String(),
+		}); err != nil {
+			return err
+		}
+		if err := writeResponseSSEEvent(writer, "response.content_part.done", map[string]any{
+			"type":          "response.content_part.done",
+			"item_id":       msgItemID,
+			"output_index":  msgOutputIndex,
+			"content_index": 0,
+			"part": map[string]any{
+				"type":        "output_text",
+				"text":        text.String(),
+				"annotations": []any{},
+			},
+		}); err != nil {
+			return err
+		}
+		if err := writeResponseSSEEvent(writer, "response.output_item.done", map[string]any{
+			"type":         "response.output_item.done",
+			"output_index": msgOutputIndex,
+			"item": map[string]any{
+				"id":     msgItemID,
+				"type":   "message",
+				"status": "completed",
+				"role":   "assistant",
+				"content": []any{map[string]any{
+					"type":        "output_text",
+					"text":        text.String(),
+					"annotations": []any{},
+				}},
+			},
+		}); err != nil {
+			return err
+		}
+	}
+	completed := protocol.BuildOpenAIResponseObject(responseID, model, created, text.String(), toolCalls, usage)
+	if rsCompletedItemID != "" {
+		reasoningItem := protocol.OpenAIResponseItem{
+			ID:     rsCompletedItemID,
+			Type:   "reasoning",
+			Status: "completed",
+		}
+		completed.Output = append([]protocol.OpenAIResponseItem{reasoningItem}, completed.Output...)
+	}
 	if logger != nil {
 		logger.Info("Token usage", map[string]any{
 			"endpoint":      "openai/responses",
@@ -1110,7 +1325,7 @@ func commandCodeStreamToOpenAIWithIdleTimeout(reader io.Reader, model string, co
 			{
 				Index:        0,
 				Message:      message,
-				FinishReason: finishReason,
+				FinishReason: streaming.MapOpenAIFinishReason(finishReason, len(toolCalls) > 0),
 			},
 		},
 		Usage: usage,
